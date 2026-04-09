@@ -1,5 +1,7 @@
 use clap::{Parser, ValueEnum};
 use prism_rs::parser::parse_dtmc;
+use tracing::Level;
+use tracing_subscriber::FmtSubscriber;
 
 #[derive(ValueEnum, Clone, Debug)]
 enum ModelType {
@@ -21,6 +23,12 @@ struct Args {
 
 fn main() {
     let args = Args::parse();
+
+    let subscriber = FmtSubscriber::builder()
+        .with_max_level(Level::TRACE)
+        .finish();
+    tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
+
     println!("== Prism-rs ==");
 
     match args.model_type {
@@ -31,7 +39,7 @@ fn main() {
 
             let mut ast = match parse_dtmc(&model_str) {
                 Ok(ast) => {
-                    println!("Successfully parsed DTMC model:");
+                    println!("Successfully parsed DTMC model");
                     ast
                 }
                 Err(e) => {

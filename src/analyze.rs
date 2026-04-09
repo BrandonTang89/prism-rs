@@ -6,14 +6,19 @@ use anyhow::{Result, bail};
 pub struct DTMCModelInfo {
     pub module_names: Vec<String>,
 
-    /// Map from action labels to the modules that they are present in
+    /// action label -> Vec(modules with commands with this label)
     pub synchronisation_labels: std::collections::HashMap<String, Vec<String>>,
+
+    /// LocalVarName -> ModuleName
+    pub local_variables: std::collections::HashMap<String, String>,
 }
 
 /// Adds explicit action labels to transitions that don't have them
 /// todo: expand renamed-modules
 pub fn analyze_dtmc(model: &mut DTMCAst) -> Result<DTMCModelInfo> {
     let mut synchronisation_labels: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    let mut local_variables: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
     for module in &mut model.modules {
         let default_module_label = format!("__{}_action__", module.name);
@@ -45,10 +50,23 @@ pub fn analyze_dtmc(model: &mut DTMCAst) -> Result<DTMCModelInfo> {
                     .insert(commands.labels[0].clone(), vec![module.name.clone()]);
             }
         }
+
+        for var_decl in &module.local_vars {
+            if local_variables.contains_key(&var_decl.name) {
+                bail!(
+                    "Local variable '{}' is declared in multiple modules: {:?} {:?}",
+                    var_decl.name,
+                    local_variables.get(&var_decl.name).unwrap(),
+                    module.name
+                );
+            }
+            local_variables.insert(var_decl.name.clone(), module.name.clone());
+        }
     }
 
     Ok(DTMCModelInfo {
         module_names: model.modules.iter().map(|m| m.name.clone()).collect(),
         synchronisation_labels,
+        local_variables,
     })
 }
