@@ -1,0 +1,98 @@
+use std::str::FromStr;
+use crate::ast::*;
+
+grammar;
+
+Comma<T>: Vec<T> = {
+    <mut v:(<T> ",")*> <e:T?> => match e {
+        None => v,
+        Some(e) => {
+            v.push(e);
+            v
+        }
+    }
+};
+
+pub DTMC: DTMCModel = {
+    "dtmc" <modules:Module*> => DTMCModel { modules }
+};
+
+Module: Module = {
+    "module" <name:Ident> <local_vars:VarDecl*> <commands:Command*> "endmodule"
+        => Module { name, local_vars, commands }
+};
+
+VarDecl: VarDecl = {
+    <name:Ident> ":" "bool" "init" <init:Expr> ";"
+        => VarDecl { name, var_type: VarType::Bool, init },
+    <name:Ident> ":" "[" <lo:Expr> ".." <hi:Expr> "]" "init" <init:Expr> ";"
+        => VarDecl { name, var_type: VarType::BoundedInt { lo, hi }, init },
+};
+
+Command: Command = {
+    "[" <labels:Comma<Ident>> "]" <guard:Expr> "->" <updates:UpdateList> ";"
+        => Command { labels, guard, updates }
+};
+
+UpdateList: Vec<ProbUpdate> = {
+    <mut v:(<ProbUpdate> "+")*> <e:ProbUpdate> => { v.push(e); v }
+};
+
+ProbUpdate: ProbUpdate = {
+    <prob:Expr> ":" <assignments:AssignmentList>
+        => ProbUpdate { prob, assignments }
+};
+
+AssignmentList: Vec<Box<Expr>> = {
+    <mut v:(<Assignment> "&")*> <e:Assignment> => { v.push(e); v }
+};
+
+Assignment: Box<Expr> = {
+    "(" <e:Expr> ")" => e
+};
+
+Ident: String = {
+    r"[a-zA-Z_][a-zA-Z0-9_]*" => <>.to_string()
+};
+
+Expr: Box<Expr> = {
+    #[precedence(level="1")]
+    r"[0-9]+" => Box::new(Expr::IntLit(i32::from_str(<>).unwrap())),
+    "false" => Box::new(Expr::BoolLit(false)),
+    "true" => Box::new(Expr::BoolLit(true)),
+    <var:Ident> "'" => Box::new(Expr::PrimedIdent(var)),
+    <var:Ident> => Box::new(Expr::Ident(var)),
+    "(" <Expr> ")",
+
+    #[precedence(level="2")] #[assoc(side="none")]
+    "!" <e:Expr> => Box::new(Expr::UnaryOp { op: UnOp::Not, operand: e }),
+    "-" <e:Expr> => Box::new(Expr::UnaryOp { op: UnOp::Neg, operand: e }),
+
+    #[precedence(level="3")] #[assoc(side="left")]
+    <lhs:Expr> "*" <rhs:Expr> => Box::new(Expr::BinOp { lhs, op: BinOp::Mul, rhs }),
+    <lhs:Expr> "/" <rhs:Expr> => Box::new(Expr::BinOp { lhs, op: BinOp::Div, rhs }),
+
+    #[precedence(level="4")] #[assoc(side="left")]
+    <lhs:Expr> "+" <rhs:Expr> => Box::new(Expr::BinOp { lhs, op: BinOp::Plus, rhs }),
+    <lhs:Expr> "-" <rhs:Expr> => Box::new(Expr::BinOp { lhs, op: BinOp::Minus, rhs }),
+
+    #[precedence(level="5")] #[assoc(side="left")]
+    <lhs:Expr> "<" <rhs:Expr> => Box::new(Expr::BinOp { lhs, op: BinOp::Less, rhs }),
+    <lhs:Expr> "<=" <rhs:Expr> => Box::new(Expr::BinOp { lhs, op: BinOp::LessEq, rhs }),
+    <lhs:Expr> ">" <rhs:Expr> => Box::new(Expr::BinOp { lhs, op: BinOp::Greater, rhs }),
+    <lhs:Expr> ">=" <rhs:Expr> => Box::new(Expr::BinOp { lhs, op: BinOp::GreaterEq, rhs }),
+
+    #[precedence(level="6")] #[assoc(side="left")]
+    <lhs:Expr> "=" <rhs:Expr> => Box::new(Expr::BinOp { lhs, op: BinOp::Equals, rhs }),
+    <lhs:Expr> "!=" <rhs:Expr> => Box::new(Expr::BinOp { lhs, op: BinOp::NotEquals, rhs }),
+
+    #[precedence(level="7")] #[assoc(side="left")]
+    <lhs:Expr> "&&" <rhs:Expr> => Box::new(Expr::BinOp { lhs, op: BinOp::And, rhs }),
+
+    #[precedence(level="8")] #[assoc(side="left")]
+    <lhs:Expr> "||" <rhs:Expr> => Box::new(Expr::BinOp { lhs, op: BinOp::Or, rhs }),
+
+    #[precedence(level="9")] #[assoc(side="right")]
+    <cond:Expr> "?" <then_branch:Expr> ":" <else_branch:Expr>
+        => Box::new(Expr::Ternary { cond, then_branch, else_branch }),
+};

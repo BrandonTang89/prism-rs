@@ -14,23 +14,23 @@ pub struct Module {
 pub struct VarDecl {
     pub name: String,
     pub var_type: VarType,
-    pub init: Option<String>,
+    pub init: Box<Expr>,
 }
 
 pub enum VarType {
-    Int,
+    BoundedInt { lo: Box<Expr>, hi: Box<Expr> },
     Bool,
 }
 
 pub struct Command {
     pub labels: Vec<String>,
-    pub guard: Expr,
+    pub guard: Box<Expr>,
     pub updates: Vec<ProbUpdate>,
 }
 
 pub struct ProbUpdate {
-    pub probability: f64,
-    pub assignments: Vec<Expr>,
+    pub prob: Box<Expr>,
+    pub assignments: Vec<Box<Expr>>,
 }
 
 pub enum Expr {
@@ -67,13 +67,16 @@ pub enum UnOp {
 pub enum BinOp {
     And,
     Or,
-    Implies,
     Equals,
     NotEquals,
     Less,
     LessEq,
     Greater,
     GreaterEq,
+    Plus,
+    Minus,
+    Mul,
+    Div,
 }
 
 /// `module mac2 = mac1 [s1=s2, s2=s1,...] endmodule`
