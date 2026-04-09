@@ -3,6 +3,13 @@ use crate::ast::*;
 
 grammar;
 
+match {
+    r"\s+" => {},                   // skip whitespace
+    r"//[^\n\r]*[\n\r]*" => {},     // skip line comments
+} else {
+    _                               // default tokenization for everything else
+}
+
 Comma<T>: Vec<T> = {
     <mut v:(<T> ",")*> <e:T?> => match e {
         None => v,
@@ -35,12 +42,14 @@ Command: Command = {
 };
 
 UpdateList: Vec<ProbUpdate> = {
-    <mut v:(<ProbUpdate> "+")*> <e:ProbUpdate> => { v.push(e); v }
+    <mut v:(<ProbUpdate> "+")*> <e:ProbUpdate> => { v.push(e); v },
 };
 
 ProbUpdate: ProbUpdate = {
     <prob:Expr> ":" <assignments:AssignmentList>
-        => ProbUpdate { prob, assignments }
+        => ProbUpdate { prob, assignments },
+    <assignments:AssignmentList>
+        => ProbUpdate { prob: Box::new(Expr::FloatLit(1.0)), assignments }
 };
 
 AssignmentList: Vec<Box<Expr>> = {
@@ -48,7 +57,12 @@ AssignmentList: Vec<Box<Expr>> = {
 };
 
 Assignment: Box<Expr> = {
-    "(" <e:Expr> ")" => e
+    "(" <var:Ident> "'" "=" <e:Expr> ")"
+        => Box::new(Expr::BinOp {
+            lhs: Box::new(Expr::PrimedIdent(var)),
+            op: BinOp::Equals,
+            rhs: e,
+        })
 };
 
 Ident: String = {
@@ -58,6 +72,7 @@ Ident: String = {
 Expr: Box<Expr> = {
     #[precedence(level="1")]
     r"[0-9]+" => Box::new(Expr::IntLit(i32::from_str(<>).unwrap())),
+    r"[0-9]+\.[0-9]+" => Box::new(Expr::FloatLit(f64::from_str(<>).unwrap())),
     "false" => Box::new(Expr::BoolLit(false)),
     "true" => Box::new(Expr::BoolLit(true)),
     <var:Ident> "'" => Box::new(Expr::PrimedIdent(var)),
