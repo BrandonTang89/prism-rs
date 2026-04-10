@@ -18,6 +18,9 @@ pub struct SymbolicDTMC<'a> {
     pub var_curr_nodes: std::collections::HashMap<String, Vec<NodeId>>,
     pub var_next_nodes: std::collections::HashMap<String, Vec<NodeId>>,
 
+    /// DD node ID to human-friendly variable bit label (e.g., s_0, s_1)
+    pub dd_var_names: std::collections::HashMap<NodeId, String>,
+
     /// ADD representing the transition relation
     pub transitions: NodeId,
 
@@ -61,6 +64,17 @@ fn allocate_dd_vars(symbolic_dtmc: &mut SymbolicDTMC) {
             let nodes: Vec<NodeId> = (0..num_bits * 2).map(|_| mgr.bdd_new_var()).collect();
             let curr_nodes: Vec<NodeId> = nodes.chunks(2).map(|c| c[0]).collect();
             let next_nodes: Vec<NodeId> = nodes.chunks(2).map(|c| c[1]).collect();
+
+            for (i, &curr) in curr_nodes.iter().enumerate() {
+                symbolic_dtmc
+                    .dd_var_names
+                    .insert(curr, format!("{}_{}", var_name, i));
+            }
+            for (i, &next) in next_nodes.iter().enumerate() {
+                symbolic_dtmc
+                    .dd_var_names
+                    .insert(next, format!("{}'_{}", var_name, i));
+            }
 
             symbolic_dtmc.curr_var_cube =
                 curr_nodes
@@ -205,7 +219,7 @@ fn translate_module(module: &Module, symbolic_dtmc: &mut SymbolicDTMC) -> Symbol
     for cmd in &module.commands {
         let symbolic_cmd = translate_command(cmd, symbolic_dtmc);
         assert!(
-            !cmd.labels.len() == 1,
+            cmd.labels.len() == 1,
             "DTMCs should have exactly one label per command after analysis"
         );
         let action = &cmd.labels[0];
@@ -228,6 +242,7 @@ pub fn build_symbolic_dtmc<'a>(
     let mut symbolic_info = SymbolicDTMC {
         var_curr_nodes: std::collections::HashMap::new(),
         var_next_nodes: std::collections::HashMap::new(),
+        dd_var_names: std::collections::HashMap::new(),
         manager: RefManager::new(),
         transitions: NodeId::ZERO,
         next_var_cube: NodeId::ONE,
@@ -253,6 +268,13 @@ pub fn build_symbolic_dtmc<'a>(
     }
 
     println!("Symbolic modules: {:?}", symbolic_modules);
+
+    let tmp = get_variable_encoding(&mut symbolic_info, "s", false);
+    println!("Encoding for variable 's': {:?}", tmp);
+    symbolic_info
+        .manager
+        .dump_add_dot(tmp, "tmp.dot", &symbolic_info.dd_var_names)
+        .unwrap();
 
     symbolic_info
 }

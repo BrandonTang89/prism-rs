@@ -1,0 +1,7 @@
+digraph BDD {
+  rankdir=TB;
+  // Terminal nodes
+  { rank=sink;
+    ONE [shape=box, label="1"];
+    ZERO [shape=box, label="0"];
+  }

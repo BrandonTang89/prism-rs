@@ -27,11 +27,11 @@ pub fn analyze_dtmc(model: &mut DTMCAst) -> Result<DTMCModelInfo> {
         std::collections::HashMap::new();
     for module in &mut model.modules {
         let default_module_label = format!("__{}_action__", module.name);
-        for commands in &mut module.commands {
-            if commands.labels.is_empty() {
-                commands.labels.push(default_module_label.clone());
-            } else if commands.labels.len() == 1 {
-                if commands.labels[0] == default_module_label {
+        for command in &mut module.commands {
+            if command.labels.is_empty() {
+                command.labels.push(default_module_label.clone());
+            } else if command.labels.len() == 1 {
+                if command.labels[0] == default_module_label {
                     bail!(
                         "Explicit action label '{}' conflicts with default label for module '{}'. Please rename the action or the module.",
                         default_module_label,
@@ -41,19 +41,20 @@ pub fn analyze_dtmc(model: &mut DTMCAst) -> Result<DTMCModelInfo> {
             } else {
                 bail!(
                     "Multiple action labels on a single command are not supported: {:?}",
-                    commands.labels
+                    command.labels
                 );
             }
+            assert!(command.labels.len() == 1);
 
-            if synchronisation_labels.contains_key(&commands.labels[0]) {
-                let modules = synchronisation_labels.get_mut(&commands.labels[0]).unwrap();
+            if synchronisation_labels.contains_key(&command.labels[0]) {
+                let modules = synchronisation_labels.get_mut(&command.labels[0]).unwrap();
                 // avoid duplicates
                 if modules.last() != Some(&module.name) {
                     modules.push(module.name.clone());
                 }
             } else {
                 synchronisation_labels
-                    .insert(commands.labels[0].clone(), vec![module.name.clone()]);
+                    .insert(command.labels[0].clone(), vec![module.name.clone()]);
             }
         }
 
