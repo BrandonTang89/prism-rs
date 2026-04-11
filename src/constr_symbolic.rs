@@ -1,7 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
 use lumindd::NodeId;
-use tracing::debug;
+
+#[allow(unused_imports)]
+use tracing::{debug, trace};
 
 use crate::analyze::DTMCModelInfo;
 use crate::ast::*;
@@ -75,11 +77,11 @@ fn allocate_dd_vars(dtmc: &mut SymbolicDTMC) {
             dtmc.var_curr_nodes.insert(var_name.clone(), curr_nodes);
             dtmc.var_next_nodes.insert(var_name.clone(), next_nodes);
 
-            debug!(
+            trace!(
                 "Allocated var '{}' with curr BDD vars: {:?}",
                 var_name, dtmc.var_curr_nodes[var_name]
             );
-            debug!(
+            trace!(
                 "Allocated var '{}' with next BDD vars: {:?}",
                 var_name, dtmc.var_next_nodes[var_name]
             );
@@ -317,7 +319,7 @@ fn translate_dtmc(dtmc: &mut SymbolicDTMC) {
 
     let mut transitions = dtmc.mgr.add_zero();
     for (act, act_modules) in &dtmc.info.modules_of_act {
-        debug!("Action '{}' is part of {:?}", act, act_modules);
+        trace!("Action '{}' is part of {:?}", act, act_modules);
         let mut act_trans = dtmc.mgr.add_const(1.0);
 
         for module_name in dtmc.ast.modules.iter().map(|m| &m.name) {
@@ -357,6 +359,7 @@ pub fn build_symbolic_dtmc(ast: DTMCAst, model_info: DTMCModelInfo) -> SymbolicD
     let mut dtmc = SymbolicDTMC::new(ast, model_info);
     allocate_dd_vars(&mut dtmc);
     translate_dtmc(&mut dtmc);
+    println!("Constructed Transition ADD");
     compute_reachable_and_filter(&mut dtmc);
 
     dtmc.mgr

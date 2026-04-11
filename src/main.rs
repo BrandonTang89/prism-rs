@@ -23,14 +23,23 @@ struct Args {
 }
 
 fn main() {
+    const BANNER: &str = r#"
+            _                                  
+ _ __  _ __(_)___ _ __ ___            _ __ ___ 
+| '_ \| '__| / __| '_ ` _ \   _____  | '__/ __|
+| |_) | |  | \__ \ | | | | | |_____| | |  \__ \
+| .__/|_|  |_|___/_| |_| |_|         |_|  |___/
+|_|                                            
+                                      
+"#;
+    println!("{BANNER}");
+
     let args = Args::parse();
 
     let subscriber = FmtSubscriber::builder()
-        .with_max_level(Level::TRACE)
+        .with_max_level(Level::DEBUG)
         .finish();
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
-
-    println!("== Prism-rs ==");
 
     // Parse, analyze and construct the symbolic model for the selected type.
     match args.model_type {
@@ -41,7 +50,7 @@ fn main() {
 
             let mut ast = match parse_dtmc(&model_str) {
                 Ok(ast) => {
-                    println!("Successfully parsed DTMC model");
+                    println!("Parsing successful");
                     ast
                 }
                 Err(e) => {
@@ -52,7 +61,7 @@ fn main() {
             let info = match prism_rs::analyze::analyze_dtmc(&mut ast) {
                 Ok(info) => {
                     println!("Model analysis successful:");
-                    println!("Module names: {:?}", info.module_names);
+                    println!("  Module names: {:?}", info.module_names);
                     info
                 }
                 Err(e) => {
@@ -63,7 +72,7 @@ fn main() {
 
             let mut symbolic_dtmc = prism_rs::constr_symbolic::build_symbolic_dtmc(ast, info);
 
-            println!("Filtered DTMC:\n{}", symbolic_dtmc.describe());
+            println!("Symbolic DTMC:\n  {}", symbolic_dtmc.describe().join("  "));
         }
     }
 }

@@ -4,8 +4,7 @@ use lumindd::NodeId;
 
 use crate::analyze::DTMCModelInfo;
 use crate::ast::DTMCAst;
-use crate::reachability::count_transitions_minterms;
-use crate::ref_manager::{RefManager, LEAK_REPORT_LIMIT};
+use crate::ref_manager::{LEAK_REPORT_LIMIT, RefManager};
 
 /// Symbolic DTMC representation used by construction and analysis passes.
 ///
@@ -71,22 +70,19 @@ impl SymbolicDTMC {
     }
 
     /// Human-readable summary of transition relation statistics.
-    pub fn describe(&mut self) -> String {
-        let mut desc = String::new();
-        desc.push_str("Variables:\n");
+    pub fn describe(&mut self) -> Vec<String> {
+        let mut desc = Vec::new();
+        desc.push("Variables:\n".into());
         for (var_name, curr_nodes) in &self.var_curr_nodes {
             let next_nodes = &self.var_next_nodes[var_name];
-            desc.push_str(&format!(
+            desc.push(format!(
                 "  {}: curr nodes {:?}, next nodes {:?}\n",
                 var_name, curr_nodes, next_nodes
             ));
         }
 
-        desc.push_str(&format!(
-            "Transitions ADD node ID: {:?}\n",
-            self.transitions
-        ));
-        desc.push_str(&format!(
+        desc.push(format!("Transitions ADD node ID: {:?}\n", self.transitions));
+        desc.push(format!(
             "Transitions 0-1 BDD node ID: {:?}\n",
             self.transitions_01_bdd
         ));
@@ -95,10 +91,9 @@ impl SymbolicDTMC {
         let stats = self
             .mgr
             .add_stats(self.transitions, (curr_bits + next_bits) as u32);
-        let transitions = count_transitions_minterms(self);
-        desc.push_str(&format!(
-            "Num Nodes ADD: {}, Num Terminals: {}, ADD non-zero minterms: {}, Transitions(minterms): {}\n",
-            stats.node_count, stats.terminal_count, stats.minterms, transitions
+        desc.push(format!(
+            "Num Nodes ADD: {}, Num Terminals: {}, Transitions(minterms): {}\n",
+            stats.node_count, stats.terminal_count, stats.minterms
         ));
         desc
     }

@@ -121,6 +121,7 @@ pub fn compute_reachable_and_filter(dtmc: &mut SymbolicDTMC) {
         .unwrap_or(0.0)
         .round() as u64;
     dtmc.mgr.deref_node(reachable_count_add);
+    
     println!(
         "Reachability (BFS): {} iterations, reachable states: {}",
         iterations, reachable_states
@@ -138,12 +139,4 @@ pub fn compute_reachable_and_filter(dtmc: &mut SymbolicDTMC) {
     dtmc.mgr.deref_node(old_bdd);
     dtmc.mgr.deref_node(reachable);
     dtmc.mgr.deref_node(trans_bdd);
-}
-
-pub fn count_transitions_minterms(dtmc: &mut SymbolicDTMC) -> u64 {
-    let (curr_indices, next_indices) = curr_next_var_indices(dtmc);
-    dtmc.mgr.bdd_count_minterms(
-        dtmc.transitions_01_bdd,
-        (curr_indices.len() + next_indices.len()) as u32,
-    )
 }
