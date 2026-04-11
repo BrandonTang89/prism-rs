@@ -7,7 +7,7 @@ pub struct DTMCModelInfo {
     pub module_names: Vec<String>,
 
     /// action label -> Vec(modules with commands with this label)
-    pub synchronisation_labels: std::collections::HashMap<String, Vec<String>>,
+    pub modules_of_act: std::collections::HashMap<String, Vec<String>>,
 
     /// LocalVarName -> ModuleName
     pub module_of_var: std::collections::HashMap<String, String>,
@@ -90,7 +90,7 @@ pub fn analyze_dtmc(model: &mut DTMCAst) -> Result<DTMCModelInfo> {
 
     Ok(DTMCModelInfo {
         module_names: model.modules.iter().map(|m| m.name.clone()).collect(),
-        synchronisation_labels,
+        modules_of_act: synchronisation_labels,
         module_of_var: local_variables,
         var_bounds,
     })

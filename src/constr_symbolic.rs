@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::analyze::*;
 use crate::ast::*;
 use crate::ref_manager::RefManager;
@@ -21,14 +23,13 @@ pub struct SymbolicDTMC<'a> {
     /// DD node ID to human-friendly variable bit label (e.g., s_0, s_1)
     pub dd_var_names: std::collections::HashMap<NodeId, String>,
 
-    /// ADD representing the transition relation
-    pub transitions: NodeId,
-
     /// All primed variables BDD cube
     pub next_var_cube: NodeId,
 
     /// All current variables BDD cube
     pub curr_var_cube: NodeId,
+    /// ADD representing the transition relation
+    pub transitions: NodeId,
 }
 
 fn allocate_dd_vars(dtmc: &mut SymbolicDTMC) {
@@ -223,11 +224,46 @@ fn translate_module(module: &Module, dtmc: &mut SymbolicDTMC) -> SymbolicModule 
     }
 }
 
+fn translate_modules(dtmc: &mut SymbolicDTMC) -> HashMap<String, SymbolicModule> {
+    dtmc.ast
+        .modules
+        .iter()
+        .map(|module| (module.name.clone(), translate_module(module, dtmc)))
+        .collect()
+}
+
+fn translate_dtmc(dtmc: &mut SymbolicDTMC) {
+    let symbolic_modules = translate_modules(dtmc);
+
+    let mut transitions = dtmc.mgr.zero();
+    for (act, act_modules) in dtmc.info.modules_of_act.iter() {
+        debug!("Action '{}' is part of {:?}", act, act_modules);
+        let mut act_trans = dtmc.mgr.one();
+        for module_name in dtmc.ast.modules.iter().map(|m| &m.name) {
+            if act_modules.contains(module_name) {
+                let mut act_mod_trans = dtmc.mgr.zero();
+                for cmd in &symbolic_modules[module_name].commands_by_action[act] {
+                    act_mod_trans = dtmc.mgr.add_plus(act_mod_trans, cmd.transition);
+                }
+                act_trans = dtmc.mgr.add_times(act_trans, act_mod_trans);
+            } else {
+                // If the module doesn't have a command with this action, it should stay the same
+                let ident = symbolic_modules[module_name].ident;
+                act_trans = dtmc.mgr.add_times(act_trans, ident);
+            }
+        }
+        transitions = dtmc.mgr.add_plus(transitions, act_trans);
+    }
+
+    dtmc.mgr.unif(transitions, dtmc.next_var_cube);
+    dtmc.transitions = transitions;
+}
+
 pub fn build_symbolic_dtmc<'a>(
     ast: &'a DTMCAst,
     model_info: &'a DTMCModelInfo,
 ) -> SymbolicDTMC<'a> {
-    let mut symbolic_info = SymbolicDTMC {
+    let mut dtmc = SymbolicDTMC {
         var_curr_nodes: std::collections::HashMap::new(),
         var_next_nodes: std::collections::HashMap::new(),
         dd_var_names: std::collections::HashMap::new(),
@@ -238,31 +274,13 @@ pub fn build_symbolic_dtmc<'a>(
         ast,
         info: model_info,
     };
-    symbolic_info.mgr.ref_node(symbolic_info.next_var_cube);
-    symbolic_info.mgr.ref_node(symbolic_info.curr_var_cube);
-    symbolic_info.mgr.ref_node(symbolic_info.transitions);
+    dtmc.mgr.ref_node(dtmc.next_var_cube);
+    dtmc.mgr.ref_node(dtmc.curr_var_cube);
+    dtmc.mgr.ref_node(dtmc.transitions);
 
-    allocate_dd_vars(&mut symbolic_info);
+    allocate_dd_vars(&mut dtmc);
+    translate_dtmc(&mut dtmc);
 
-    let symbolic_modules: Vec<SymbolicModule> = symbolic_info
-        .ast
-        .modules
-        .iter()
-        .map(|module| translate_module(module, &mut symbolic_info))
-        .collect();
-
-    for (action, module_names) in &model_info.synchronisation_labels {
-        debug!("Action '{}' is used by modules: {:?}", action, module_names);
-    }
-
-    println!("Symbolic modules: {:?}", symbolic_modules);
-
-    let tmp = get_variable_encoding(&mut symbolic_info, "s", false);
-    println!("Encoding for variable 's': {:?}", tmp);
-    symbolic_info
-        .mgr
-        .dump_add_dot(tmp, "tmp.dot", &symbolic_info.dd_var_names)
-        .unwrap();
-
-    symbolic_info
+    dtmc.mgr.dump_add_dot(dtmc.transitions, "tmp.dot", &dtmc.dd_var_names).unwrap();
+    dtmc
 }
