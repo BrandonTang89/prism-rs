@@ -59,9 +59,9 @@ fn main() {
                 }
             };
 
-            let symbolic_dtmc = prism_rs::constr_symbolic::build_symbolic_dtmc(&ast, &info);
-            println!("Symbolic DTMC construction successful:");
-            println!("Transitions BDD node ID: {:?}", symbolic_dtmc.transitions);
+            let mut symbolic_dtmc = prism_rs::constr_symbolic::build_symbolic_dtmc(&ast, &info);
+
+            println!("Filtered DTMC:\n{}", symbolic_dtmc.describe());
         }
     }
 }

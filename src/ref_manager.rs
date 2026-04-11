@@ -9,6 +9,13 @@ pub struct RefManager {
     pub inner: Manager,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct AddStats {
+    pub node_count: usize,
+    pub terminal_count: usize,
+    pub minterms: u64,
+}
+
 static EPS: f64 = 1e-10;
 
 impl RefManager {
@@ -71,6 +78,25 @@ impl RefManager {
         self.inner.ref_node(result);
         self.inner.deref_node(a);
         self.inner.deref_node(b);
+        result
+    }
+
+    /// __Refs__: Result \
+    /// __Derefs__: f, g
+    pub fn bdd_and_abstract(&mut self, f: NodeId, g: NodeId, cube: NodeId) -> NodeId {
+        let result = self.inner.bdd_and_abstract(f, g, cube);
+        self.inner.ref_node(result);
+        self.inner.deref_node(f);
+        self.inner.deref_node(g);
+        result
+    }
+
+    /// __Refs__: Result \
+    /// __Derefs__: f
+    pub fn bdd_swap_variables(&mut self, f: NodeId, x: &[u16], y: &[u16]) -> NodeId {
+        let result = self.inner.bdd_swap_variables(f, x, y);
+        self.inner.ref_node(result);
+        self.inner.deref_node(f);
         result
     }
 
@@ -233,6 +259,13 @@ impl RefManager {
         node
     }
 
+    /// __Refs__: Result (0/1-valued ADD variable)
+    pub fn add_var(&mut self, var_index: u16) -> NodeId {
+        let node = self.inner.add_ith_var(var_index);
+        self.inner.ref_node(node);
+        node
+    }
+
     /// __Refs__: Node \
     /// __Derefs__: None
     pub fn ref_node(&mut self, node: NodeId) -> NodeId {
@@ -247,15 +280,20 @@ impl RefManager {
         node
     }
 
-    /// __Refs__: ONE \
-    pub fn one(&mut self) -> NodeId {
-        let node = self.add_const(1.0);
-        self.inner.ref_node(node);
-        node
+    /// __Refs__: BDD ONE \
+    pub fn bdd_one(&mut self) -> NodeId {
+        self.inner.ref_node(NodeId::ONE);
+        NodeId::ONE
+    }
+
+    /// __Refs__: BDD ZERO \
+    pub fn bdd_zero(&mut self) -> NodeId {
+        self.inner.ref_node(NodeId::ZERO);
+        NodeId::ZERO
     }
 
     /// __Refs__: ZERO \
-    pub fn zero(&mut self) -> NodeId {
+    pub fn add_zero(&mut self) -> NodeId {
         let node = self.inner.add_zero();
         self.inner.ref_node(node);
         node
@@ -265,10 +303,135 @@ impl RefManager {
     /// __Refs__: result \
     /// __Derefs__: m
     pub fn unif(&mut self, m: NodeId, next_var_cube: NodeId) -> NodeId {
+        // Keep one reference to `m` as numerator while abstraction consumes one.
         self.ref_node(m);
-        let tmp = self.add_exist_abstract(m, next_var_cube);
-        let res = self.add_divide(m, tmp);
+        let denom = self.add_sum_abstract(m, next_var_cube);
+
+        // Avoid division by zero on out-of-domain encodings:
+        // safe_denom = denom + ITE(denom > EPS, 0, 1).
+        self.ref_node(denom);
+        let denom_pos_bdd = self.add_bdd_threshold(denom, EPS);
+        let denom_pos_add = self.bdd_to_add(denom_pos_bdd);
+        let one = self.add_const(1.0);
+        let denom_is_zero_add = self.add_minus(one, denom_pos_add);
+        let safe_denom = self.add_plus(denom, denom_is_zero_add);
+
+        self.add_divide(m, safe_denom)
+    }
+
+    /// Generic ADD abstraction over all vars in `cube`.
+    ///
+    /// For each quantified variable x, combines positive/negative cofactors
+    /// with `combine` in variable-order sequence.
+    ///
+    /// `combine` must consume both operands and return a referenced result.
+    /// __Refs__: result
+    /// __Derefs__: f
+    pub fn add_abstract_with<F>(&mut self, f: NodeId, cube: NodeId, mut combine: F) -> NodeId
+    where
+        F: FnMut(&mut RefManager, NodeId, NodeId) -> NodeId,
+    {
+        let mut vars: Vec<(u16, u32)> = self
+            .inner
+            .bdd_support(cube)
+            .into_iter()
+            .map(|var| (var, self.inner.read_perm(var)))
+            .collect();
+        vars.sort_by_key(|&(_, level)| level);
+
+        let mut cache: HashMap<(NodeId, usize), NodeId> = HashMap::new();
+        let res = self.add_abstract_with_rec(f.regular(), &vars, 0, &mut combine, &mut cache);
+
+        // Drop cache-owned references; keep only the returned root reference.
+        for &cached in cache.values() {
+            self.deref_node(cached);
+        }
+
+        self.deref_node(f);
         res
+    }
+
+    fn add_abstract_with_rec<F>(
+        &mut self,
+        node: NodeId,
+        vars: &[(u16, u32)],
+        idx: usize,
+        combine: &mut F,
+        cache: &mut HashMap<(NodeId, usize), NodeId>,
+    ) -> NodeId
+    where
+        F: FnMut(&mut RefManager, NodeId, NodeId) -> NodeId,
+    {
+        let node = node.regular();
+        let key = (node, idx);
+        if let Some(&cached) = cache.get(&key) {
+            self.ref_node(cached);
+            return cached;
+        }
+
+        let result = if idx >= vars.len() {
+            self.ref_node(node)
+        } else {
+            let node_var = self.inner.read_var_index(node);
+
+            if node_var == u16::MAX {
+                // Terminal: each remaining quantified variable is absent here,
+                // so repeatedly combine the function with itself.
+                let mut acc = self.ref_node(node);
+                for _ in idx..vars.len() {
+                    self.ref_node(acc);
+                    self.ref_node(acc);
+                    let next = combine(self, acc, acc);
+                    self.deref_node(acc);
+                    acc = next;
+                }
+                acc
+            } else {
+                let node_level = self.inner.read_perm(node_var);
+                let (_, quant_level) = vars[idx];
+
+                if node_level > quant_level {
+                    // Quantified variable is above this node but absent in subtree.
+                    self.ref_node(node);
+                    self.ref_node(node);
+                    let merged = combine(self, node, node);
+                    let out = self.add_abstract_with_rec(merged, vars, idx + 1, combine, cache);
+                    self.deref_node(merged);
+                    out
+                } else if node_level == quant_level {
+                    // Quantify this variable by combining the two cofactors.
+                    let t = self.inner.read_then(node).regular();
+                    let e = self.inner.read_else(node).regular();
+                    self.ref_node(t);
+                    self.ref_node(e);
+                    let merged = combine(self, t, e);
+                    let out = self.add_abstract_with_rec(merged, vars, idx + 1, combine, cache);
+                    self.deref_node(merged);
+                    out
+                } else {
+                    // This node's variable is not quantified yet; recurse once.
+                    let t = self.inner.read_then(node).regular();
+                    let e = self.inner.read_else(node).regular();
+                    let t_abs = self.add_abstract_with_rec(t, vars, idx, combine, cache);
+                    let e_abs = self.add_abstract_with_rec(e, vars, idx, combine, cache);
+                    let cond = self.add_var(node_var);
+                    self.add_ite(cond, t_abs, e_abs)
+                }
+            }
+        };
+
+        // Keep one cache-owned reference plus one for the caller.
+        self.ref_node(result);
+        cache.insert(key, result);
+        result
+    }
+
+    /// ADD sum-abstraction over all vars in `cube`.
+    /// For each quantified variable x, computes f[x=1] + f[x=0].
+    /// __Refs__: result
+    /// __Derefs__: f
+    pub fn add_sum_abstract(&mut self, f: NodeId, cube: NodeId) -> NodeId {
+        self.add_abstract_with(f, cube, |mgr, a, b| mgr.add_plus(a, b))
     }
 
     fn var_index_label_map(&self, var_names: &HashMap<NodeId, String>) -> HashMap<u16, String> {
@@ -287,6 +450,69 @@ impl RefManager {
             .get(&var_index)
             .cloned()
             .unwrap_or_else(|| format!("x{}", var_index))
+    }
+
+    pub fn num_nodes(&self, node: NodeId) -> usize {
+        let mut visited = HashSet::new();
+        self.num_nodes_rec(node.regular(), &mut visited);
+        visited.len()
+    }
+
+    fn num_nodes_rec(&self, node: NodeId, visited: &mut HashSet<NodeId>) {
+        let node = node.regular();
+        if !visited.insert(node) {
+            return;
+        }
+        if self.inner.read_var_index(node) == u16::MAX {
+            return;
+        }
+        let t = self.inner.read_then(node);
+        let e = self.inner.read_else(node);
+        self.num_nodes_rec(t, visited);
+        self.num_nodes_rec(e, visited);
+    }
+
+    pub fn bdd_count_minterms(&mut self, bdd: NodeId, num_vars: u32) -> u64 {
+        self.inner.bdd_count_minterm(bdd, num_vars).round() as u64
+    }
+
+    pub fn add_stats(&mut self, root: NodeId, num_vars: u32) -> AddStats {
+        let root = root.regular();
+
+        let mut visited = HashSet::new();
+        let mut terminal_count = 0usize;
+        self.count_nodes_and_terminals(root, &mut visited, &mut terminal_count);
+
+        let bdd = self.add_to_bdd(root);
+        let minterms = self.bdd_count_minterms(bdd, num_vars);
+
+        AddStats {
+            node_count: visited.len(),
+            terminal_count,
+            minterms,
+        }
+    }
+
+    fn count_nodes_and_terminals(
+        &self,
+        node: NodeId,
+        visited: &mut HashSet<NodeId>,
+        terminal_count: &mut usize,
+    ) {
+        let node = node.regular();
+        if !visited.insert(node) {
+            return;
+        }
+
+        if self.inner.read_var_index(node) == u16::MAX {
+            *terminal_count += 1;
+            return;
+        }
+
+        let t = self.inner.read_then(node);
+        let e = self.inner.read_else(node);
+        self.count_nodes_and_terminals(t, visited, terminal_count);
+        self.count_nodes_and_terminals(e, visited, terminal_count);
     }
 
     /// Dumps a graphviz dot file representing the structure of the ADD rooted at `root`. \
@@ -356,8 +582,8 @@ impl RefManager {
         let eid = Self::intern_id(ids, next_id, e);
         let label = Self::var_label(var, labels);
         writeln!(out, "  n{} [shape=ellipse,label=\"{}\"];", this, label)?;
-        writeln!(out, "  n{} -> n{} [label=\"1\"];", this, tid)?;
-        writeln!(out, "  n{} -> n{} [label=\"0\",style=dashed];", this, eid)?;
+        writeln!(out, "  n{} -> n{};", this, tid)?;
+        writeln!(out, "  n{} -> n{} [style=dashed];", this, eid)?;
         self.dump_add_dot_rec(t, out, labels, ids, next_id, visited)?;
         self.dump_add_dot_rec(e, out, labels, ids, next_id, visited)?;
         Ok(())
@@ -490,9 +716,11 @@ impl RefManager {
     /// __Derefs__: None
     pub fn get_encoding(&mut self, nodes: &Vec<NodeId>) -> NodeId {
         let mut result = self.add_const(0.0);
+        let add_one = self.add_const(1.0);
 
         for bm in 0..(1i32 << nodes.len()) {
-            let mut term = self.one();
+            self.ref_node(add_one);
+            let mut term = add_one;
             for i in 0..nodes.len() {
                 let var = nodes[i];
                 self.ref_node(var);

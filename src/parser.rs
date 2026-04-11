@@ -16,7 +16,10 @@ pub fn parse_dtmc(input: &str) -> Result<ast::DTMCAst, String> {
                 let (line, col) = line_col(input, *location);
                 format!("Invalid token at line {line}, col {col}")
             }
-            lalrpop_util::ParseError::UnrecognizedToken { token: (start, tok, _), expected } => {
+            lalrpop_util::ParseError::UnrecognizedToken {
+                token: (start, tok, _),
+                expected,
+            } => {
                 let (line, col) = line_col(input, *start);
                 format!(
                     "Unexpected token '{tok}' at line {line}, col {col}. Expected one of: {}",
@@ -24,9 +27,12 @@ pub fn parse_dtmc(input: &str) -> Result<ast::DTMCAst, String> {
                 )
             }
             lalrpop_util::ParseError::UnrecognizedEof { expected, .. } => {
-                format!("Unexpected end of input. Expected one of: {}", expected.join(", "))
+                format!(
+                    "Unexpected end of input. Expected one of: {}",
+                    expected.join(", ")
+                )
             }
-            _ => e.to_string(), 
+            _ => e.to_string(),
         };
         msg
     })

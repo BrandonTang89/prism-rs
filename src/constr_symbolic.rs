@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::analyze::*;
 use crate::ast::*;
+use crate::reachability::compute_reachable_and_filter;
 use crate::ref_manager::RefManager;
 use lumindd::NodeId;
 use tracing::debug;
@@ -28,28 +29,65 @@ pub struct SymbolicDTMC<'a> {
 
     /// All current variables BDD cube
     pub curr_var_cube: NodeId,
-    
+
     /// ADD representing the transition relation
     pub transitions: NodeId,
+
+    /// 0-1 BDD of transitions after reachability filtering
+    pub transitions_01_bdd: NodeId,
 }
 
 impl<'a> SymbolicDTMC<'a> {
     fn new(ast: &'a DTMCAst, info: &'a DTMCModelInfo) -> Self {
         let mut mgr = RefManager::new();
-        let transitions = mgr.zero();
-        let next_var_cube = mgr.one();
-        let curr_var_cube = mgr.one();
+        let transitions = mgr.add_zero();
+        let transitions_01_bdd = mgr.bdd_zero();
+        let next_var_cube = mgr.bdd_one();
+        let curr_var_cube = mgr.bdd_one();
         SymbolicDTMC {
             var_curr_nodes: std::collections::HashMap::new(),
             var_next_nodes: std::collections::HashMap::new(),
             dd_var_names: std::collections::HashMap::new(),
             mgr,
             transitions,
+            transitions_01_bdd,
             next_var_cube,
             curr_var_cube,
             ast,
             info,
         }
+    }
+
+    pub fn describe(&mut self) -> String {
+        let mut desc = String::new();
+        desc.push_str(&format!("Variables:\n"));
+        for (var_name, curr_nodes) in &self.var_curr_nodes {
+            let next_nodes = &self.var_next_nodes[var_name];
+            let var_desc = format!(
+                "  {}: curr nodes {:?}, next nodes {:?}\n",
+                var_name, curr_nodes, next_nodes
+            );
+            desc.push_str(&var_desc);
+        }
+        desc.push_str(&format!(
+            "Transitions ADD node ID: {:?}\n",
+            self.transitions
+        ));
+        desc.push_str(&format!(
+            "Transitions 0-1 BDD node ID: {:?}\n",
+            self.transitions_01_bdd
+        ));
+
+        let num_curr_bits: usize = self.var_curr_nodes.values().map(|v| v.len()).sum();
+        let num_next_bits: usize = self.var_next_nodes.values().map(|v| v.len()).sum();
+        let num_vars = (num_curr_bits + num_next_bits) as u32;
+        let stats = self.mgr.add_stats(self.transitions, num_vars);
+
+        desc.push_str(&format!(
+            "Num Nodes ADD: {}, Num Terminals: {}, Transitions(minterms): {}\n",
+            stats.node_count, stats.terminal_count, stats.minterms
+        ));
+        desc
     }
 }
 
@@ -109,11 +147,11 @@ fn allocate_dd_vars(dtmc: &mut SymbolicDTMC) {
             dtmc.var_next_nodes.insert(var_name.clone(), next_nodes);
 
             debug!(
-                "Allocated variable '{}' with current BDD variables: {:?}",
+                "Allocated var '{}' with curr BDD vars: {:?}",
                 var_name, dtmc.var_curr_nodes[var_name]
             );
             debug!(
-                "Allocated variable '{}' with next BDD variables: {:?}",
+                "Allocated var '{}' with next BDD vars: {:?}",
                 var_name, dtmc.var_next_nodes[var_name]
             );
         }
@@ -256,9 +294,10 @@ fn translate_update(
         .map(|assignment| translate_expr(&*assignment, dtmc))
         .collect::<Vec<_>>();
     let mgr = &mut dtmc.mgr;
+    let add_one = mgr.add_const(1.0);
     let mut assign = symbolic_updates
         .iter()
-        .fold(mgr.one(), |acc, &result| mgr.add_times(acc, result));
+        .fold(add_one, |acc, &result| mgr.add_times(acc, result));
 
     // For variables that are not assigned, ensure they remain unchanged
     for var_name in module_local_vars {
@@ -270,8 +309,9 @@ fn translate_update(
         for (curr, next) in curr_nodes.into_iter().zip(next_nodes.into_iter()) {
             mgr.ref_node(curr);
             mgr.ref_node(next);
-            let eq = mgr.bdd_equals(curr, next);
-            assign = mgr.add_times(assign, eq);
+            let eq_bdd = mgr.bdd_equals(curr, next);
+            let eq_add = mgr.bdd_to_add(eq_bdd);
+            assign = mgr.add_times(assign, eq_add);
         }
     }
 
@@ -293,34 +333,30 @@ fn translate_command(
     let mgr = &mut dtmc.mgr;
     let updates_sum = updates
         .iter()
-        .fold(mgr.zero(), |acc, &update| mgr.add_plus(acc, update));
+        .fold(mgr.add_zero(), |acc, &update| mgr.add_plus(acc, update));
     let transition = mgr.add_times(guard, updates_sum);
 
     SymbolicCommand { transition }
 }
 
 fn translate_module(module: &Module, dtmc: &mut SymbolicDTMC) -> SymbolicModule {
-    let mgr = &mut dtmc.mgr;
     let module_local_vars = module
         .local_vars
         .iter()
         .map(|v| v.name.clone())
         .collect::<Vec<_>>();
 
-    let mut ident = mgr.one();
+    let mut ident = dtmc.mgr.bdd_one();
     for var_name in module.local_vars.iter().map(|v| &v.name) {
-        let curr_nodes = &dtmc.var_curr_nodes[var_name];
-        let next_nodes = &dtmc.var_next_nodes[var_name];
+        let curr_nodes = dtmc.var_curr_nodes[var_name].clone();
+        let next_nodes = dtmc.var_next_nodes[var_name].clone();
 
-        ident = curr_nodes
-            .iter()
-            .zip(next_nodes.iter())
-            .fold(ident, |acc, (&curr, &next)| {
-                mgr.ref_node(curr);
-                mgr.ref_node(next);
-                let eq = mgr.bdd_equals(curr, next); // curr == next
-                mgr.bdd_and(acc, eq)
-            });
+        for (curr, next) in curr_nodes.into_iter().zip(next_nodes.into_iter()) {
+            dtmc.mgr.ref_node(curr);
+            dtmc.mgr.ref_node(next);
+            let eq = dtmc.mgr.bdd_equals(curr, next); // curr == next
+            ident = dtmc.mgr.bdd_and(ident, eq);
+        }
     }
 
     let mut commands_by_action: std::collections::HashMap<String, Vec<SymbolicCommand>> =
@@ -337,6 +373,8 @@ fn translate_module(module: &Module, dtmc: &mut SymbolicDTMC) -> SymbolicModule 
             .or_insert_with(Vec::new)
             .push(symbolic_cmd);
     }
+
+    let ident = dtmc.mgr.bdd_to_add(ident);
 
     SymbolicModule {
         ident,
@@ -355,13 +393,13 @@ fn translate_modules(dtmc: &mut SymbolicDTMC) -> HashMap<String, SymbolicModule>
 fn translate_dtmc(dtmc: &mut SymbolicDTMC) {
     let symbolic_modules = translate_modules(dtmc);
 
-    let mut transitions = dtmc.mgr.zero();
+    let mut transitions = dtmc.mgr.add_zero();
     for (act, act_modules) in dtmc.info.modules_of_act.iter() {
         debug!("Action '{}' is part of {:?}", act, act_modules);
-        let mut act_trans = dtmc.mgr.one();
+        let mut act_trans = dtmc.mgr.add_const(1.0);
         for module_name in dtmc.ast.modules.iter().map(|m| &m.name) {
             if act_modules.contains(module_name) {
-                let mut act_mod_trans = dtmc.mgr.zero();
+                let mut act_mod_trans = dtmc.mgr.add_zero();
                 for cmd in &symbolic_modules[module_name].commands_by_action[act] {
                     act_mod_trans = dtmc.mgr.add_plus(act_mod_trans, cmd.transition);
                 }
@@ -386,8 +424,165 @@ pub fn build_symbolic_dtmc<'a>(
     let mut dtmc = SymbolicDTMC::new(ast, model_info);
     allocate_dd_vars(&mut dtmc);
     translate_dtmc(&mut dtmc);
+    compute_reachable_and_filter(&mut dtmc);
     dtmc.mgr
         .dump_add_dot(dtmc.transitions, "tmp.dot", &dtmc.dd_var_names)
         .unwrap();
     dtmc
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use lumindd::{Manager, NodeId};
+
+    use crate::{analyze::analyze_dtmc, parser::parse_dtmc};
+
+    use super::*;
+
+    fn eval_add(mgr: &Manager, node: NodeId, assignment: &HashMap<u16, bool>) -> f64 {
+        let reg = node.regular();
+        let var = mgr.read_var_index(reg);
+        if var == u16::MAX {
+            return mgr.add_value(reg).expect("terminal ADD value expected");
+        }
+        let take_then = assignment.get(&var).copied().unwrap_or(false);
+        let child = if take_then {
+            mgr.read_then(reg)
+        } else {
+            mgr.read_else(reg)
+        };
+        eval_add(mgr, child, assignment)
+    }
+
+    fn set_bits(mgr: &Manager, vars: &[NodeId], value: i32, assignment: &mut HashMap<u16, bool>) {
+        for (i, node) in vars.iter().enumerate() {
+            let idx = mgr.read_var_index(node.regular());
+            assignment.insert(idx, (value & (1 << i)) != 0);
+        }
+    }
+
+    fn trans_prob(dtmc: &SymbolicDTMC, s: i32, sp: i32) -> f64 {
+        let mgr = &dtmc.mgr.inner;
+        let mut assignment = HashMap::new();
+        set_bits(mgr, &dtmc.var_curr_nodes["s"], s, &mut assignment);
+        set_bits(mgr, &dtmc.var_next_nodes["s"], sp, &mut assignment);
+        eval_add(mgr, dtmc.transitions, &assignment)
+    }
+
+    fn trans_prob_knuth(dtmc: &SymbolicDTMC, s: i32, d: i32, sp: i32, dp: i32) -> f64 {
+        let mgr = &dtmc.mgr.inner;
+        let mut assignment = HashMap::new();
+        set_bits(mgr, &dtmc.var_curr_nodes["s"], s, &mut assignment);
+        set_bits(mgr, &dtmc.var_curr_nodes["d"], d, &mut assignment);
+        set_bits(mgr, &dtmc.var_next_nodes["s"], sp, &mut assignment);
+        set_bits(mgr, &dtmc.var_next_nodes["d"], dp, &mut assignment);
+        eval_add(mgr, dtmc.transitions, &assignment)
+    }
+
+    #[test]
+    fn simple_dtmc_rows_are_correct() {
+        let model = include_str!("../tests/dtmc/simple_dtmc.prism");
+        let mut ast = parse_dtmc(model).expect("parse failed");
+        let info = analyze_dtmc(&mut ast).expect("analysis failed");
+        let dtmc = build_symbolic_dtmc(&ast, &info);
+
+        let p01 = trans_prob(&dtmc, 0, 1);
+        let p02 = trans_prob(&dtmc, 0, 2);
+        let p00 = trans_prob(&dtmc, 0, 0);
+        let p10 = trans_prob(&dtmc, 1, 0);
+        let p12 = trans_prob(&dtmc, 1, 2);
+        let p11 = trans_prob(&dtmc, 1, 1);
+        let p20 = trans_prob(&dtmc, 2, 0);
+        let p21 = trans_prob(&dtmc, 2, 1);
+        let p22 = trans_prob(&dtmc, 2, 2);
+
+        assert!((p01 - 0.5).abs() < 1e-9, "p01={p01}");
+        assert!((p02 - 0.5).abs() < 1e-9, "p02={p02}");
+        assert!((p00 - 0.0).abs() < 1e-9, "p00={p00}");
+
+        assert!((p10 - 0.5).abs() < 1e-9, "p10={p10}");
+        assert!((p12 - 0.5).abs() < 1e-9, "p12={p12}");
+        assert!((p11 - 0.0).abs() < 1e-9, "p11={p11}");
+
+        assert!((p20 - 0.5).abs() < 1e-9, "p20={p20}");
+        assert!((p21 - 0.5).abs() < 1e-9, "p21={p21}");
+        assert!((p22 - 0.0).abs() < 1e-9, "p22={p22}");
+    }
+
+    #[test]
+    fn simple_dtmc_invalid_state_is_not_inf() {
+        let model = include_str!("../tests/dtmc/simple_dtmc.prism");
+        let mut ast = parse_dtmc(model).expect("parse failed");
+        let info = analyze_dtmc(&mut ast).expect("analysis failed");
+        let dtmc = build_symbolic_dtmc(&ast, &info);
+
+        let p = trans_prob(&dtmc, 3, 0);
+        assert!(
+            p.is_finite(),
+            "invalid encoded state produced non-finite value: {p}"
+        );
+    }
+
+    #[test]
+    fn knuth_die_transition_count_matches_prism() {
+        let model = include_str!("../tests/dtmc/knuth_die.prism");
+        let mut ast = parse_dtmc(model).expect("parse failed");
+        let info = analyze_dtmc(&mut ast).expect("analysis failed");
+        let dtmc = build_symbolic_dtmc(&ast, &info);
+
+        let reachable_states = [
+            (0, 0),
+            (1, 0),
+            (2, 0),
+            (3, 0),
+            (4, 0),
+            (5, 0),
+            (6, 0),
+            (7, 1),
+            (7, 2),
+            (7, 3),
+            (7, 4),
+            (7, 5),
+            (7, 6),
+        ];
+
+        let mut transitions = 0usize;
+        for (s, d) in reachable_states {
+            let mut row_sum = 0.0;
+            for sp in 0..=7 {
+                for dp in 0..=6 {
+                    let p = trans_prob_knuth(&dtmc, s, d, sp, dp);
+                    assert!(
+                        p.is_finite(),
+                        "non-finite prob at ({s},{d})->({sp},{dp}): {p}"
+                    );
+                    if p > 1e-12 {
+                        transitions += 1;
+                        row_sum += p;
+                    }
+                }
+            }
+            assert!(
+                (row_sum - 1.0).abs() < 1e-9,
+                "row sum for ({s},{d}) is {row_sum}"
+            );
+        }
+
+        // PRISM reports 20 transitions for this model.
+        assert_eq!(transitions, 20, "transition count mismatch: {transitions}");
+
+        // Example unreachable state: (s=1,d=1) should have no outgoing mass after filtering.
+        let mut unreachable_row_sum = 0.0;
+        for sp in 0..=7 {
+            for dp in 0..=6 {
+                unreachable_row_sum += trans_prob_knuth(&dtmc, 1, 1, sp, dp);
+            }
+        }
+        assert!(
+            unreachable_row_sum.abs() < 1e-12,
+            "unreachable row not filtered: {unreachable_row_sum}"
+        );
+    }
 }

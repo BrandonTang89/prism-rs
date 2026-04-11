@@ -1,7 +1,7 @@
 /// Modifies the AST to assist in model checking.
 /// Also gathers information about the model that will be useful for later stages of the pipeline
 use crate::ast::*;
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 
 pub struct DTMCModelInfo {
     pub module_names: Vec<String>,
@@ -53,8 +53,7 @@ pub fn analyze_dtmc(model: &mut DTMCAst) -> Result<DTMCModelInfo> {
                     modules.push(module.name.clone());
                 }
             } else {
-                synchronisation_labels
-                    .insert(command.labels[0].clone(), vec![module.name.clone()]);
+                synchronisation_labels.insert(command.labels[0].clone(), vec![module.name.clone()]);
             }
         }
 
