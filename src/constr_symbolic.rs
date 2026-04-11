@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::analyze::*;
 use crate::ast::*;
@@ -28,8 +28,29 @@ pub struct SymbolicDTMC<'a> {
 
     /// All current variables BDD cube
     pub curr_var_cube: NodeId,
+    
     /// ADD representing the transition relation
     pub transitions: NodeId,
+}
+
+impl<'a> SymbolicDTMC<'a> {
+    fn new(ast: &'a DTMCAst, info: &'a DTMCModelInfo) -> Self {
+        let mut mgr = RefManager::new();
+        let transitions = mgr.zero();
+        let next_var_cube = mgr.one();
+        let curr_var_cube = mgr.one();
+        SymbolicDTMC {
+            var_curr_nodes: std::collections::HashMap::new(),
+            var_next_nodes: std::collections::HashMap::new(),
+            dd_var_names: std::collections::HashMap::new(),
+            mgr,
+            transitions,
+            next_var_cube,
+            curr_var_cube,
+            ast,
+            info,
+        }
+    }
 }
 
 fn allocate_dd_vars(dtmc: &mut SymbolicDTMC) {
@@ -62,7 +83,7 @@ fn allocate_dd_vars(dtmc: &mut SymbolicDTMC) {
             let mgr = &mut dtmc.mgr;
 
             // Interleaved ordering
-            let nodes: Vec<NodeId> = (0..num_bits * 2).map(|_| mgr.bdd_new_var()).collect();
+            let nodes: Vec<NodeId> = (0..num_bits * 2).map(|_| mgr.new_var()).collect();
             let curr_nodes: Vec<NodeId> = nodes.chunks(2).map(|c| c[0]).collect();
             let next_nodes: Vec<NodeId> = nodes.chunks(2).map(|c| c[1]).collect();
 
@@ -128,6 +149,7 @@ fn get_variable_encoding(dtmc: &mut SymbolicDTMC, var_name: &str, primed: bool) 
     mgr.add_plus(encoding, offset_add)
 }
 
+/// Returns a referenced ADD representing the expression
 fn translate_expr(expr: &Expr, dtmc: &mut SymbolicDTMC) -> NodeId {
     match expr {
         Expr::IntLit(i) => dtmc.mgr.add_const(*i as f64),
@@ -135,6 +157,19 @@ fn translate_expr(expr: &Expr, dtmc: &mut SymbolicDTMC) -> NodeId {
         Expr::BoolLit(b) => dtmc.mgr.add_const(if *b { 1.0 } else { 0.0 }),
         Expr::Ident(name) => get_variable_encoding(dtmc, name, false),
         Expr::PrimedIdent(name) => get_variable_encoding(dtmc, name, true),
+        Expr::UnaryOp { op, operand } => {
+            let value = translate_expr(operand, dtmc);
+            match op {
+                UnOp::Not => {
+                    let one = dtmc.mgr.add_const(1.0);
+                    dtmc.mgr.add_minus(one, value)
+                }
+                UnOp::Neg => {
+                    let zero = dtmc.mgr.add_const(0.0);
+                    dtmc.mgr.add_minus(zero, value)
+                }
+            }
+        }
         Expr::BinOp { lhs, op, rhs } => {
             let left = translate_expr(lhs, dtmc);
             let right = translate_expr(rhs, dtmc);
@@ -143,51 +178,134 @@ fn translate_expr(expr: &Expr, dtmc: &mut SymbolicDTMC) -> NodeId {
                 BinOp::Minus => dtmc.mgr.add_minus(left, right),
                 BinOp::Mul => dtmc.mgr.add_times(left, right),
                 BinOp::Div => dtmc.mgr.add_divide(left, right),
-                BinOp::Eq => dtmc.mgr.add_equals(left, right),
-                BinOp::Neq => dtmc.mgr.add_nequals(left, right),
-                BinOp::Lt => dtmc.mgr.add_less_than(left, right),
-                BinOp::Leq => dtmc.mgr.add_less_or_equal(left, right),
-                BinOp::Gt => dtmc.mgr.add_greater_than(left, right),
-                BinOp::Geq => dtmc.mgr.add_greater_or_equal(left, right),
-                BinOp::And | BinOp::Or => todo!(),
+                BinOp::Eq => {
+                    let bdd = dtmc.mgr.add_equals(left, right);
+                    dtmc.mgr.bdd_to_add(bdd)
+                }
+                BinOp::Neq => {
+                    let bdd = dtmc.mgr.add_nequals(left, right);
+                    dtmc.mgr.bdd_to_add(bdd)
+                }
+                BinOp::Lt => {
+                    let bdd = dtmc.mgr.add_less_than(left, right);
+                    dtmc.mgr.bdd_to_add(bdd)
+                }
+                BinOp::Leq => {
+                    let bdd = dtmc.mgr.add_less_or_equal(left, right);
+                    dtmc.mgr.bdd_to_add(bdd)
+                }
+                BinOp::Gt => {
+                    let bdd = dtmc.mgr.add_greater_than(left, right);
+                    dtmc.mgr.bdd_to_add(bdd)
+                }
+                BinOp::Geq => {
+                    let bdd = dtmc.mgr.add_greater_or_equal(left, right);
+                    dtmc.mgr.bdd_to_add(bdd)
+                }
+                BinOp::And => dtmc.mgr.add_times(left, right),
+                BinOp::Or => {
+                    let bdd_left = dtmc.mgr.add_to_bdd(left);
+                    let bdd_right = dtmc.mgr.add_to_bdd(right);
+                    let bdd_or = dtmc.mgr.bdd_or(bdd_left, bdd_right);
+                    dtmc.mgr.bdd_to_add(bdd_or)
+                }
             }
         }
-        _ => todo!(),
+        Expr::Ternary {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            let cond_add = translate_expr(cond, dtmc);
+            let then_add = translate_expr(then_branch, dtmc);
+            let else_add = translate_expr(else_branch, dtmc);
+            dtmc.mgr.add_ite(cond_add, then_add, else_add)
+        }
     }
 }
 
-fn translate_update(update: &ProbUpdate, dtmc: &mut SymbolicDTMC) -> NodeId {
+fn get_assign_target(expr: &Expr) -> Option<&str> {
+    match expr {
+        Expr::BinOp {
+            lhs, op: BinOp::Eq, ..
+        } => match &**lhs {
+            Expr::PrimedIdent(name) => Some(name.as_str()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn translate_update(
+    update: &ProbUpdate,
+    module_local_vars: &[String],
+    dtmc: &mut SymbolicDTMC,
+) -> NodeId {
     let prob = translate_expr(&update.prob, dtmc);
+
+    let assigned_vars: HashSet<String> = update
+        .assignments
+        .iter()
+        .filter_map(|assignment| get_assign_target(assignment).map(|name| name.to_string()))
+        .collect();
+
+    // For variables that are updated, use the translated expression
     let symbolic_updates = update
         .assignments
         .iter()
         .map(|assignment| translate_expr(&*assignment, dtmc))
         .collect::<Vec<_>>();
     let mgr = &mut dtmc.mgr;
-    let assign = symbolic_updates
+    let mut assign = symbolic_updates
         .iter()
         .fold(mgr.one(), |acc, &result| mgr.add_times(acc, result));
+
+    // For variables that are not assigned, ensure they remain unchanged
+    for var_name in module_local_vars {
+        if assigned_vars.contains(var_name) {
+            continue;
+        }
+        let curr_nodes = dtmc.var_curr_nodes[var_name].clone();
+        let next_nodes = dtmc.var_next_nodes[var_name].clone();
+        for (curr, next) in curr_nodes.into_iter().zip(next_nodes.into_iter()) {
+            mgr.ref_node(curr);
+            mgr.ref_node(next);
+            let eq = mgr.bdd_equals(curr, next);
+            assign = mgr.add_times(assign, eq);
+        }
+    }
+
     dtmc.mgr.add_times(prob, assign)
 }
 
-fn translate_command(cmd: &Command, dtmc: &mut SymbolicDTMC) -> SymbolicCommand {
+fn translate_command(
+    cmd: &Command,
+    module_local_vars: &[String],
+    dtmc: &mut SymbolicDTMC,
+) -> SymbolicCommand {
     let guard = translate_expr(&cmd.guard, dtmc);
     let updates = cmd
         .updates
         .iter()
-        .map(|update| translate_update(update, dtmc))
+        .map(|update| translate_update(update, module_local_vars, dtmc))
         .collect::<Vec<_>>();
 
     let mgr = &mut dtmc.mgr;
-    let transition = updates
+    let updates_sum = updates
         .iter()
-        .fold(guard, |acc, &update| mgr.add_times(acc, update));
+        .fold(mgr.zero(), |acc, &update| mgr.add_plus(acc, update));
+    let transition = mgr.add_times(guard, updates_sum);
 
     SymbolicCommand { transition }
 }
 
 fn translate_module(module: &Module, dtmc: &mut SymbolicDTMC) -> SymbolicModule {
     let mgr = &mut dtmc.mgr;
+    let module_local_vars = module
+        .local_vars
+        .iter()
+        .map(|v| v.name.clone())
+        .collect::<Vec<_>>();
 
     let mut ident = mgr.one();
     for var_name in module.local_vars.iter().map(|v| &v.name) {
@@ -198,6 +316,8 @@ fn translate_module(module: &Module, dtmc: &mut SymbolicDTMC) -> SymbolicModule 
             .iter()
             .zip(next_nodes.iter())
             .fold(ident, |acc, (&curr, &next)| {
+                mgr.ref_node(curr);
+                mgr.ref_node(next);
                 let eq = mgr.bdd_equals(curr, next); // curr == next
                 mgr.bdd_and(acc, eq)
             });
@@ -206,7 +326,7 @@ fn translate_module(module: &Module, dtmc: &mut SymbolicDTMC) -> SymbolicModule 
     let mut commands_by_action: std::collections::HashMap<String, Vec<SymbolicCommand>> =
         std::collections::HashMap::new();
     for cmd in &module.commands {
-        let symbolic_cmd = translate_command(cmd, dtmc);
+        let symbolic_cmd = translate_command(cmd, &module_local_vars, dtmc);
         assert!(
             cmd.labels.len() == 1,
             "DTMCs should have exactly one label per command after analysis"
@@ -255,7 +375,7 @@ fn translate_dtmc(dtmc: &mut SymbolicDTMC) {
         transitions = dtmc.mgr.add_plus(transitions, act_trans);
     }
 
-    dtmc.mgr.unif(transitions, dtmc.next_var_cube);
+    transitions = dtmc.mgr.unif(transitions, dtmc.next_var_cube);
     dtmc.transitions = transitions;
 }
 
@@ -263,24 +383,11 @@ pub fn build_symbolic_dtmc<'a>(
     ast: &'a DTMCAst,
     model_info: &'a DTMCModelInfo,
 ) -> SymbolicDTMC<'a> {
-    let mut dtmc = SymbolicDTMC {
-        var_curr_nodes: std::collections::HashMap::new(),
-        var_next_nodes: std::collections::HashMap::new(),
-        dd_var_names: std::collections::HashMap::new(),
-        mgr: RefManager::new(),
-        transitions: NodeId::ZERO,
-        next_var_cube: NodeId::ONE,
-        curr_var_cube: NodeId::ONE,
-        ast,
-        info: model_info,
-    };
-    dtmc.mgr.ref_node(dtmc.next_var_cube);
-    dtmc.mgr.ref_node(dtmc.curr_var_cube);
-    dtmc.mgr.ref_node(dtmc.transitions);
-
+    let mut dtmc = SymbolicDTMC::new(ast, model_info);
     allocate_dd_vars(&mut dtmc);
     translate_dtmc(&mut dtmc);
-
-    dtmc.mgr.dump_add_dot(dtmc.transitions, "tmp.dot", &dtmc.dd_var_names).unwrap();
+    dtmc.mgr
+        .dump_add_dot(dtmc.transitions, "tmp.dot", &dtmc.dd_var_names)
+        .unwrap();
     dtmc
 }

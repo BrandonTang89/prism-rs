@@ -66,6 +66,16 @@ impl RefManager {
 
     /// __Refs__: Result \
     /// __Derefs__: a, b
+    pub fn bdd_or(&mut self, a: NodeId, b: NodeId) -> NodeId {
+        let result = self.inner.bdd_or(a, b);
+        self.inner.ref_node(result);
+        self.inner.deref_node(a);
+        self.inner.deref_node(b);
+        result
+    }
+
+    /// __Refs__: Result \
+    /// __Derefs__: a, b
     pub fn add_times(&mut self, a: NodeId, b: NodeId) -> NodeId {
         let result = self.inner.add_times(a, b);
         self.inner.ref_node(result);
@@ -115,8 +125,17 @@ impl RefManager {
 
     /// __Refs__: Result \
     /// __Derefs__: a
-    pub fn add_bdd_threshold(&mut self, a: NodeId, threshold: f64) -> NodeId {
+    fn add_bdd_threshold(&mut self, a: NodeId, threshold: f64) -> NodeId {
         let result = self.inner.add_bdd_threshold(a, threshold);
+        self.inner.ref_node(result);
+        self.inner.deref_node(a);
+        result
+    }
+
+    /// __Refs__: Result \
+    /// __Derefs__: a
+    pub fn add_to_bdd(&mut self, a: NodeId) -> NodeId {
+        let result = self.add_bdd_threshold(a, EPS);
         self.inner.ref_node(result);
         self.inner.deref_node(a);
         result
@@ -135,8 +154,11 @@ impl RefManager {
     /// __Refs__: Result \
     /// __Derefs__: a, b
     pub fn add_equals(&mut self, a: NodeId, b: NodeId) -> NodeId {
-        let diff = self.add_minus(a, b);
-        let neq = self.add_bdd_threshold(diff, EPS);
+        self.ref_node(a);
+        self.ref_node(b);
+        let gt = self.add_greater_than(a, b);
+        let lt = self.add_less_than(a, b);
+        let neq = self.bdd_or(gt, lt);
         self.bdd_not(neq)
     }
 
@@ -144,8 +166,23 @@ impl RefManager {
     /// __Refs__: Result \
     /// __Derefs__: a, b
     pub fn add_nequals(&mut self, a: NodeId, b: NodeId) -> NodeId {
-        let diff = self.add_minus(a, b);
-        self.add_bdd_threshold(diff, EPS)
+        self.ref_node(a);
+        self.ref_node(b);
+        let gt = self.add_greater_than(a, b);
+        let lt = self.add_less_than(a, b);
+        self.bdd_or(gt, lt)
+    }
+
+    /// If cond > 0 then then_branch else else_branch \
+    /// __Refs__: Result \
+    /// __Derefs__: cond, then_branch, else_branch
+    pub fn add_ite(&mut self, cond: NodeId, then_branch: NodeId, else_branch: NodeId) -> NodeId {
+        let result = self.inner.add_ite(cond, then_branch, else_branch);
+        self.inner.ref_node(result);
+        self.inner.deref_node(cond);
+        self.inner.deref_node(then_branch);
+        self.inner.deref_node(else_branch);
+        result
     }
 
     /// Convert two ADDs to a BDD that is 1 iff a > b.
@@ -156,7 +193,7 @@ impl RefManager {
         self.add_bdd_threshold(diff, EPS)
     }
 
-    /// Convert two ADDs to a BDD that is 1 iff a < b.
+    /// Convert two ADDs to a BDD that is 1 iff a < b. \
     /// __Refs__: Result \
     /// __Derefs__: a, b
     pub fn add_less_than(&mut self, a: NodeId, b: NodeId) -> NodeId {
@@ -164,20 +201,20 @@ impl RefManager {
         self.add_bdd_threshold(diff, EPS)
     }
 
-    /// Convert two ADDs to a BDD that is 1 iff a >= b.
+    /// Convert two ADDs to a BDD that is 1 iff a >= b. \
     /// __Refs__: Result \
     /// __Derefs__: a, b
     pub fn add_greater_or_equal(&mut self, a: NodeId, b: NodeId) -> NodeId {
-        let lt = self.add_less_than(a, b);
-        self.bdd_not(lt)
+        let lt_bdd = self.add_less_than(a, b);
+        self.bdd_not(lt_bdd)
     }
 
-    /// Convert two ADDs to a BDD that is 1 iff a <= b.
+    /// Convert two ADDs to a BDD that is 1 iff a <= b. \
     /// __Refs__: Result \
     /// __Derefs__: a, b
     pub fn add_less_or_equal(&mut self, a: NodeId, b: NodeId) -> NodeId {
-        let gt = self.add_greater_than(a, b);
-        self.bdd_not(gt)
+        let gt_bdd = self.add_greater_than(a, b);
+        self.bdd_not(gt_bdd)
     }
 
     /// __Refs__: Result \
@@ -190,7 +227,7 @@ impl RefManager {
     }
 
     /// __Refs__: Result
-    pub fn bdd_new_var(&mut self) -> NodeId {
+    pub fn new_var(&mut self) -> NodeId {
         let node = self.inner.bdd_new_var();
         self.inner.ref_node(node);
         node
@@ -212,14 +249,16 @@ impl RefManager {
 
     /// __Refs__: ONE \
     pub fn one(&mut self) -> NodeId {
-        self.inner.ref_node(NodeId::ONE);
-        NodeId::ONE
+        let node = self.add_const(1.0);
+        self.inner.ref_node(node);
+        node
     }
 
     /// __Refs__: ZERO \
     pub fn zero(&mut self) -> NodeId {
-        self.inner.ref_node(NodeId::ZERO);
-        NodeId::ZERO
+        let node = self.inner.add_zero();
+        self.inner.ref_node(node);
+        node
     }
 
     /// Unif(m) = m ÷ Abstract(+,next_var_cube,m). \
