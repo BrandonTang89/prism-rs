@@ -120,8 +120,9 @@ pub fn compute_reachable_and_filter(dtmc: &mut SymbolicDTMC) {
         .add_value(reachable_count_add.regular())
         .unwrap_or(0.0)
         .round() as u64;
+    dtmc.reachable_states = reachable_states;
     dtmc.mgr.deref_node(reachable_count_add);
-    
+
     println!(
         "Reachability (BFS): {} iterations, reachable states: {}",
         iterations, reachable_states

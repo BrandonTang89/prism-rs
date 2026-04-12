@@ -1,10 +1,17 @@
 use std::collections::HashMap;
 
 use lumindd::NodeId;
+use tracing::error;
 
 use crate::analyze::DTMCModelInfo;
 use crate::ast::DTMCAst;
 use crate::ref_manager::{LEAK_REPORT_LIMIT, RefManager};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefLeakReport {
+    pub nonzero_ref_count: usize,
+    pub nonzero_ref_entries: Vec<(NodeId, i64)>,
+}
 
 /// Symbolic DTMC representation used by construction and analysis passes.
 ///
@@ -33,10 +40,15 @@ pub struct SymbolicDTMC {
     /// BDD cube over all current-state variables.
     pub curr_var_cube: NodeId,
 
-    /// MTBDD transition relation P(s,s').
+    /// ADD transition relation P(s,s').
     pub transitions: NodeId,
     /// 0-1 BDD support of filtered transitions.
     pub transitions_01_bdd: NodeId,
+
+    /// Number of reachable states computed by BFS during construction.
+    pub reachable_states: u64,
+
+    released: bool,
 }
 
 impl SymbolicDTMC {
@@ -59,14 +71,61 @@ impl SymbolicDTMC {
             curr_var_cube,
             transitions,
             transitions_01_bdd,
+            reachable_states: 0,
+            released: false,
         }
     }
 
-    /// Number of state bits in the current/next encoding.
-    pub fn state_bit_counts(&self) -> (usize, usize) {
-        let curr = self.var_curr_nodes.values().map(|v| v.len()).sum();
-        let next = self.var_next_nodes.values().map(|v| v.len()).sum();
+    /// Number of state variables in the current/next encoding.
+    pub fn state_variable_counts(&self) -> (u32, u32) {
+        let curr = self.var_curr_nodes.values().map(|v| v.len() as u32).sum();
+        let next = self.var_next_nodes.values().map(|v| v.len() as u32).sum();
         (curr, next)
+    }
+
+    /// Total number of variables used
+    pub fn total_variable_count(&self) -> u32 {
+        self.state_variable_counts().0 + self.state_variable_counts().1
+    }
+
+    /// Number of reachable states in the DTMC
+    pub fn reachable_state_count(&mut self) -> u64 {
+        self.reachable_states
+    }
+
+    fn release_refs(&mut self) -> RefLeakReport {
+        if self.released {
+            return RefLeakReport {
+                nonzero_ref_count: 0,
+                nonzero_ref_entries: Vec::new(),
+            };
+        }
+
+        self.mgr.deref_node(self.transitions);
+        self.mgr.deref_node(self.transitions_01_bdd);
+        self.mgr.deref_node(self.curr_var_cube);
+        self.mgr.deref_node(self.next_var_cube);
+
+        for nodes in self.var_curr_nodes.values() {
+            for &node in nodes {
+                self.mgr.deref_node(node);
+            }
+        }
+        for nodes in self.var_next_nodes.values() {
+            for &node in nodes {
+                self.mgr.deref_node(node);
+            }
+        }
+
+        self.released = true;
+        RefLeakReport {
+            nonzero_ref_count: self.mgr.nonzero_ref_count(),
+            nonzero_ref_entries: self.mgr.nonzero_ref_entries(LEAK_REPORT_LIMIT),
+        }
+    }
+
+    pub fn release_report(&mut self) -> RefLeakReport {
+        self.release_refs()
     }
 
     /// Human-readable summary of transition relation statistics.
@@ -87,7 +146,7 @@ impl SymbolicDTMC {
             self.transitions_01_bdd
         ));
 
-        let (curr_bits, next_bits) = self.state_bit_counts();
+        let (curr_bits, next_bits) = self.state_variable_counts();
         let stats = self
             .mgr
             .add_stats(self.transitions, (curr_bits + next_bits) as u32);
@@ -101,40 +160,14 @@ impl SymbolicDTMC {
 
 impl Drop for SymbolicDTMC {
     fn drop(&mut self) {
-        self.mgr.deref_node(self.transitions);
-        self.mgr.deref_node(self.transitions_01_bdd);
-        self.mgr.deref_node(self.curr_var_cube);
-        self.mgr.deref_node(self.next_var_cube);
-
-        for nodes in self.var_curr_nodes.values() {
-            for &node in nodes {
-                self.mgr.deref_node(node);
-            }
-        }
-        for nodes in self.var_next_nodes.values() {
-            for &node in nodes {
-                self.mgr.deref_node(node);
-            }
-        }
-
-        let leaks = self.mgr.nonzero_ref_count();
-        println!("RefManager non-zero refs before drop: {}", leaks);
-        if leaks > 0 {
-            for (node, count) in self.mgr.nonzero_ref_entries(LEAK_REPORT_LIMIT) {
-                println!("  {:?} -> {}", node, count);
-            }
-        }
-
-        // Drop framework roots we intentionally keep alive while the manager runs.
-        self.mgr.deref_node(NodeId::ONE);
-        self.mgr.deref_node(NodeId::ZERO);
-        self.mgr.deref_node(NodeId::ZERO);
-
-        let leaks_after = self.mgr.nonzero_ref_count();
-        println!("RefManager non-zero refs after constants: {}", leaks_after);
-        if leaks_after > 0 {
-            for (node, count) in self.mgr.nonzero_ref_entries(LEAK_REPORT_LIMIT) {
-                println!("  {:?} -> {}", node, count);
+        let report = self.release_refs();
+        if report.nonzero_ref_count > 0 {
+            error!(
+                "RefManager non-zero refs after owned release: {}",
+                report.nonzero_ref_count
+            );
+            for (node, count) in report.nonzero_ref_entries {
+                error!("  {:?} -> {}", node, count);
             }
         }
     }

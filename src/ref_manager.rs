@@ -207,6 +207,14 @@ impl RefManager {
         result
     }
 
+    /// __Refs__: Result; __Derefs__: a
+    pub fn bdd_or_abstract(&mut self, a: NodeId, cube: NodeId) -> NodeId {
+        let result = self.inner.bdd_exist_abstract(a, cube);
+        self.ref_node(result);
+        self.deref_node(a);
+        result
+    }
+
     /// __Refs__: Result; __Derefs__: f, g
     pub fn bdd_and_abstract(&mut self, f: NodeId, g: NodeId, cube: NodeId) -> NodeId {
         let result = self.inner.bdd_and_abstract(f, g, cube);
@@ -475,7 +483,8 @@ impl RefManager {
     // Counting/statistics
     // ---------------------------------------------------------------------
 
-    /// Count BDD minterms using the given number of support variables.
+    /// Count BDD minterms using the given number of support variables.\
+    /// __Refs__: None; __Derefs__: None
     pub fn bdd_count_minterms(&mut self, bdd: NodeId, num_vars: u32) -> u64 {
         self.inner.bdd_count_minterm(bdd, num_vars).round() as u64
     }

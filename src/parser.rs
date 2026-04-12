@@ -1,4 +1,5 @@
 use lalrpop_util::lalrpop_mod;
+use anyhow::Result;
 
 use crate::ast;
 lalrpop_mod!(
@@ -12,7 +13,7 @@ lalrpop_mod!(
 ///
 /// On parse failure, this reports line/column-oriented diagnostics to make
 /// grammar errors easier to locate.
-pub fn parse_dtmc(input: &str) -> Result<ast::DTMCAst, String> {
+pub fn parse_dtmc(input: &str) -> Result<ast::DTMCAst> {
     let parser = parser::DTMCParser::new();
     parser.parse(input).map_err(|e| {
         let msg = match &e {
@@ -38,7 +39,7 @@ pub fn parse_dtmc(input: &str) -> Result<ast::DTMCAst, String> {
             }
             _ => e.to_string(),
         };
-        msg
+        anyhow::anyhow!(msg)
     })
 }
 
