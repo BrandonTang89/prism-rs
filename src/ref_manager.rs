@@ -4,7 +4,8 @@ use std::{
     io::{self, Write},
 };
 
-use lumindd::{Manager, NodeId};
+use lumindd::Manager;
+pub use lumindd::NodeId;
 
 /// Threshold used when converting numeric ADDs to boolean BDDs.
 const EPS: f64 = 1e-10;

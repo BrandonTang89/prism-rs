@@ -1,4 +1,5 @@
 use crate::ast::{Expr, VarDecl, VarType};
+use crate::ref_manager::NodeId;
 use crate::symbolic_dtmc::SymbolicDTMC;
 
 /// Extract a concrete integer from an initial-value expression.
@@ -21,7 +22,7 @@ fn init_value(var_decl: &VarDecl) -> i32 {
 }
 
 /// Build BDD for the unique initial state over current-state bits.
-fn build_init_bdd(dtmc: &mut SymbolicDTMC) -> lumindd::NodeId {
+fn build_init_bdd(dtmc: &mut SymbolicDTMC) -> NodeId {
     let mut init = dtmc.mgr.bdd_one();
 
     for module in &dtmc.ast.modules {
@@ -74,7 +75,7 @@ fn curr_next_var_indices(dtmc: &SymbolicDTMC) -> (Vec<u16>, Vec<u16>) {
     (curr_indices, next_indices)
 }
 
-fn build_curr_next_identity_bdd(dtmc: &mut SymbolicDTMC) -> lumindd::NodeId {
+fn build_curr_next_identity_bdd(dtmc: &mut SymbolicDTMC) -> NodeId {
     let mut ident = dtmc.mgr.bdd_one();
     for module in &dtmc.ast.modules {
         for var_decl in &module.local_vars {
@@ -92,7 +93,7 @@ fn build_curr_next_identity_bdd(dtmc: &mut SymbolicDTMC) -> lumindd::NodeId {
     ident
 }
 
-fn add_dead_end_self_loops(dtmc: &mut SymbolicDTMC, reachable: lumindd::NodeId) {
+fn add_dead_end_self_loops(dtmc: &mut SymbolicDTMC, reachable: NodeId) {
     dtmc.mgr.ref_node(dtmc.transitions_01_bdd);
     let out_curr = dtmc
         .mgr

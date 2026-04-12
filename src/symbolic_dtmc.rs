@@ -1,11 +1,10 @@
 use std::collections::HashMap;
 
-use lumindd::NodeId;
 use tracing::error;
 
 use crate::analyze::DTMCModelInfo;
 use crate::ast::DTMCAst;
-use crate::ref_manager::{LEAK_REPORT_LIMIT, RefManager};
+use crate::ref_manager::{NodeId, RefManager, LEAK_REPORT_LIMIT};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RefLeakReport {

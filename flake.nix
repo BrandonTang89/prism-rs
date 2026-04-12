@@ -30,6 +30,7 @@
               pkgs.python3Packages.mypy
               pkgs.uv
               pkgs.graphviz
+              pkgs.perf
             ];
           };
         });
