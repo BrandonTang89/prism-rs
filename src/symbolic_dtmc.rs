@@ -4,7 +4,7 @@ use tracing::error;
 
 use crate::analyze::DTMCModelInfo;
 use crate::ast::DTMCAst;
-use crate::ref_manager::{Add01Node, AddNode, NodeId, RefManager, LEAK_REPORT_LIMIT};
+use crate::ref_manager::{BddNode, AddNode, NodeId, RefManager, LEAK_REPORT_LIMIT};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RefLeakReport {
@@ -35,14 +35,14 @@ pub struct SymbolicDTMC {
     pub dd_var_names: HashMap<NodeId, String>,
 
     /// 0-1 ADD cube over all next-state variables.
-    pub next_var_cube: Add01Node,
+    pub next_var_cube: BddNode,
     /// 0-1 ADD cube over all current-state variables.
-    pub curr_var_cube: Add01Node,
+    pub curr_var_cube: BddNode,
 
     /// ADD transition relation P(s,s').
     pub transitions: AddNode,
     /// 0-1 ADD support of filtered transitions.
-    pub transitions_01_add: Add01Node,
+    pub transitions_01_add: BddNode,
 
     /// Number of reachable states computed by BFS during construction.
     pub reachable_states: u64,

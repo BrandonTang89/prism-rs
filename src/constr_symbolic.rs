@@ -6,7 +6,7 @@ use tracing::{debug, trace};
 use crate::analyze::DTMCModelInfo;
 use crate::ast::*;
 use crate::reachability::compute_reachable_and_filter;
-use crate::ref_manager::{Add01Node, AddNode, NodeId};
+use crate::ref_manager::{BddNode, AddNode, NodeId};
 use crate::symbolic_dtmc::SymbolicDTMC;
 
 /// Internal symbolic representation of a single command.
@@ -66,11 +66,11 @@ fn allocate_dd_vars(dtmc: &mut SymbolicDTMC) {
 
             dtmc.curr_var_cube = curr_nodes.iter().fold(dtmc.curr_var_cube, |cube, &node| {
                 mgr.ref_node(node);
-                mgr.add01_and(cube, Add01Node(node))
+                mgr.add01_and(cube, BddNode(node))
             });
             dtmc.next_var_cube = next_nodes.iter().fold(dtmc.next_var_cube, |cube, &node| {
                 mgr.ref_node(node);
-                mgr.add01_and(cube, Add01Node(node))
+                mgr.add01_and(cube, BddNode(node))
             });
 
             dtmc.var_curr_nodes.insert(var_name.clone(), curr_nodes);
@@ -140,34 +140,34 @@ fn translate_expr(expr: &Expr, dtmc: &mut SymbolicDTMC) -> AddNode {
                 BinOp::Div => dtmc.mgr.add_divide(left, right),
                 BinOp::Eq => {
                     let bdd = dtmc.mgr.add_equals(left, right);
-                    dtmc.mgr.add01_to_add(bdd)
+                    dtmc.mgr.bdd_to_add(bdd)
                 }
                 BinOp::Neq => {
                     let bdd = dtmc.mgr.add_nequals(left, right);
-                    dtmc.mgr.add01_to_add(bdd)
+                    dtmc.mgr.bdd_to_add(bdd)
                 }
                 BinOp::Lt => {
                     let bdd = dtmc.mgr.add_less_than(left, right);
-                    dtmc.mgr.add01_to_add(bdd)
+                    dtmc.mgr.bdd_to_add(bdd)
                 }
                 BinOp::Leq => {
                     let bdd = dtmc.mgr.add_less_or_equal(left, right);
-                    dtmc.mgr.add01_to_add(bdd)
+                    dtmc.mgr.bdd_to_add(bdd)
                 }
                 BinOp::Gt => {
                     let bdd = dtmc.mgr.add_greater_than(left, right);
-                    dtmc.mgr.add01_to_add(bdd)
+                    dtmc.mgr.bdd_to_add(bdd)
                 }
                 BinOp::Geq => {
                     let bdd = dtmc.mgr.add_greater_or_equal(left, right);
-                    dtmc.mgr.add01_to_add(bdd)
+                    dtmc.mgr.bdd_to_add(bdd)
                 }
                 BinOp::And => dtmc.mgr.add_times(left, right),
                 BinOp::Or => {
-                    let add01_left = dtmc.mgr.add01_from_add(left);
-                    let add01_right = dtmc.mgr.add01_from_add(right);
+                    let add01_left = dtmc.mgr.add_to_bdd(left);
+                    let add01_right = dtmc.mgr.add_to_bdd(right);
                     let add01_or = dtmc.mgr.add01_or(add01_left, add01_right);
-                    dtmc.mgr.add01_to_add(add01_or)
+                    dtmc.mgr.bdd_to_add(add01_or)
                 }
             }
         }
@@ -177,7 +177,7 @@ fn translate_expr(expr: &Expr, dtmc: &mut SymbolicDTMC) -> AddNode {
             else_branch,
         } => {
             let cond_expr = translate_expr(cond, dtmc);
-            let cond_add = dtmc.mgr.add01_from_add(cond_expr);
+            let cond_add = dtmc.mgr.add_to_bdd(cond_expr);
             let then_add = translate_expr(then_branch, dtmc);
             let else_add = translate_expr(else_branch, dtmc);
             dtmc.mgr.add_ite(cond_add, then_add, else_add)
@@ -236,8 +236,8 @@ fn translate_update(
         for (curr, next) in curr_nodes.into_iter().zip(next_nodes.into_iter()) {
             mgr.ref_node(curr);
             mgr.ref_node(next);
-            let eq = mgr.add01_equals(Add01Node(curr), Add01Node(next));
-            let eq_add = mgr.add01_to_add(eq);
+            let eq = mgr.add01_equals(BddNode(curr), BddNode(next));
+            let eq_add = mgr.bdd_to_add(eq);
             assign = mgr.add_times(assign, eq_add);
         }
     }
@@ -281,11 +281,11 @@ fn translate_module(module: &Module, dtmc: &mut SymbolicDTMC) -> SymbolicModule 
         for (curr, next) in curr_nodes.into_iter().zip(next_nodes.into_iter()) {
             dtmc.mgr.ref_node(curr);
             dtmc.mgr.ref_node(next);
-            let eq = dtmc.mgr.add01_equals(Add01Node(curr), Add01Node(next));
+            let eq = dtmc.mgr.add01_equals(BddNode(curr), BddNode(next));
             ident = dtmc.mgr.add01_and(ident, eq);
         }
     }
-    let ident = dtmc.mgr.add01_to_add(ident);
+    let ident = dtmc.mgr.bdd_to_add(ident);
 
     let mut commands_by_action: HashMap<String, Vec<SymbolicCommand>> = HashMap::new();
     for cmd in &module.commands {

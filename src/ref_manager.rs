@@ -10,12 +10,12 @@ use cudd_sys::{
     cudd::{
         CUDD_CACHE_SLOTS, CUDD_UNIQUE_SLOTS, Cudd_BddToAdd, Cudd_CountMinterm, Cudd_E,
         Cudd_IsComplement, Cudd_IsConstant, Cudd_NodeReadIndex, Cudd_Not, Cudd_Quit,
-        Cudd_ReadLogicZero, Cudd_ReadOne, Cudd_RecursiveDeref, Cudd_Ref, Cudd_Regular, Cudd_T,
-        Cudd_V, Cudd_addApply, Cudd_addBddPattern, Cudd_addBddThreshold, Cudd_addConst,
-        Cudd_addDivide, Cudd_addExistAbstract, Cudd_addIte, Cudd_addIthVar, Cudd_addMinus,
-        Cudd_addPlus, Cudd_addTimes, Cudd_bddAnd, Cudd_bddAndAbstract, Cudd_bddExistAbstract,
-        Cudd_bddIthVar, Cudd_bddNewVar, Cudd_bddOr, Cudd_bddSwapVariables, Cudd_bddXnor,
-        Cudd_bddXor, DD_APPLY_OPERATOR,
+        Cudd_ReadLogicZero, Cudd_ReadOne, Cudd_ReadZero, Cudd_RecursiveDeref, Cudd_Ref,
+        Cudd_Regular, Cudd_T, Cudd_V, Cudd_addApply, Cudd_addBddPattern, Cudd_addBddThreshold,
+        Cudd_addConst, Cudd_addDivide, Cudd_addExistAbstract, Cudd_addIte, Cudd_addIthVar,
+        Cudd_addMinus, Cudd_addPlus, Cudd_addTimes, Cudd_bddAnd, Cudd_bddAndAbstract,
+        Cudd_bddExistAbstract, Cudd_bddIthVar, Cudd_bddNewVar, Cudd_bddOr, Cudd_bddSwapVariables,
+        Cudd_bddXnor, Cudd_bddXor, DD_APPLY_OPERATOR,
     },
 };
 
@@ -81,7 +81,9 @@ pub struct AddNode(pub NodeId);
 /// - `AddNode`: arbitrary numeric ADD
 /// - `Add01Node`: 0-1 relation/set (semantic subtype)
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Add01Node(pub NodeId);
+pub struct BddNode(pub NodeId);
+
+
 
 /// Safe facade over CUDD manager with explicit ref accounting.
 ///
@@ -137,12 +139,43 @@ impl RefManager {
         }
     }
 
-    fn one_nodeid(&self) -> NodeId {
+    fn one(&self) -> NodeId {
         NodeId(unsafe { Cudd_ReadOne(self.mgr) })
     }
 
-    fn zero01_nodeid(&self) -> NodeId {
+    fn bdd_zero(&self) -> NodeId {
         NodeId(unsafe { Cudd_ReadLogicZero(self.mgr) })
+    }
+
+    fn add_zero(&self) -> NodeId {
+        NodeId(unsafe { Cudd_ReadZero(self.mgr) })
+    }
+
+    /// __Refs__: result; __Derefs__: `a`.
+    fn add_to_bdd_threshold(&mut self, a: AddNode, threshold: f64) -> BddNode {
+        let result = self.must_node(
+            unsafe { Cudd_addBddThreshold(self.mgr, a.0.as_ptr(), threshold) },
+            "Cudd_addBddThreshold",
+        );
+        self.ref_node(result);
+        self.deref_node(a.0);
+        BddNode(result)
+    }
+
+    /// __Refs__: result; __Derefs__: `a`.
+    pub fn add_to_bdd(&mut self, a: AddNode) -> BddNode {
+        self.add_to_bdd_threshold(a, EPS)
+    }
+
+    /// __Refs__: result; __Derefs__: `a`.
+    pub fn bdd_to_add(&mut self, a: BddNode) -> AddNode {
+        let result = self.must_node(
+            unsafe { Cudd_BddToAdd(self.mgr, a.0.as_ptr()) },
+            "Cudd_BddToAdd",
+        );
+        self.ref_node(result);
+        self.deref_node(a.0);
+        AddNode(result)
     }
 
     fn must_node(&self, p: *mut DdNode, op: &str) -> NodeId {
@@ -253,18 +286,13 @@ impl RefManager {
     }
 
     /// __Refs__: result; __Derefs__: none.
-    pub fn add01_one(&mut self) -> Add01Node {
-        Add01Node(self.ref_node(self.one_nodeid()))
+    pub fn add01_one(&mut self) -> BddNode {
+        BddNode(self.ref_node(self.one()))
     }
 
     /// __Refs__: result; __Derefs__: none.
-    pub fn add01_zero(&mut self) -> Add01Node {
-        Add01Node(self.ref_node(self.zero01_nodeid()))
-    }
-
-    /// __Refs__: result; __Derefs__: none.
-    pub fn add_zero(&mut self) -> AddNode {
-        self.add_const(0.0)
+    pub fn add01_zero(&mut self) -> BddNode {
+        BddNode(self.ref_node(self.bdd_zero()))
     }
 
     /// __Refs__: result; __Derefs__: none.
@@ -275,30 +303,30 @@ impl RefManager {
 
     /// Create a new variable and return it as a 0-1 ADD literal.
     /// __Refs__: result; __Derefs__: none.
-    pub fn new_var(&mut self) -> Add01Node {
+    pub fn new_var(&mut self) -> BddNode {
         let node = self.must_node(unsafe { Cudd_bddNewVar(self.mgr) }, "Cudd_bddNewVar");
-        Add01Node(self.ref_node(node))
+        BddNode(self.ref_node(node))
     }
 
     /// __Refs__: result; __Derefs__: none.
-    pub fn add_var(&mut self, var_index: u16) -> Add01Node {
+    pub fn add_var(&mut self, var_index: u16) -> BddNode {
         let node = self.must_node(
             unsafe { Cudd_addIthVar(self.mgr, var_index as i32) },
             "Cudd_addIthVar",
         );
-        Add01Node(self.ref_node(node))
+        BddNode(self.ref_node(node))
     }
 
     /// __Refs__: result; __Derefs__: `a`.
-    pub fn add01_not(&mut self, a: Add01Node) -> Add01Node {
+    pub fn add01_not(&mut self, a: BddNode) -> BddNode {
         let result = NodeId(unsafe { Cudd_Not(a.0.as_ptr()) });
         self.ref_node(result);
         self.deref_node(a.0);
-        Add01Node(result)
+        BddNode(result)
     }
 
     /// __Refs__: result; __Derefs__: `a`, `b`.
-    pub fn add01_equals(&mut self, a: Add01Node, b: Add01Node) -> Add01Node {
+    pub fn add01_equals(&mut self, a: BddNode, b: BddNode) -> BddNode {
         let result = self.must_node(
             unsafe { Cudd_bddXnor(self.mgr, a.0.as_ptr(), b.0.as_ptr()) },
             "Cudd_bddXnor",
@@ -306,11 +334,11 @@ impl RefManager {
         self.ref_node(result);
         self.deref_node(a.0);
         self.deref_node(b.0);
-        Add01Node(result)
+        BddNode(result)
     }
 
     /// __Refs__: result; __Derefs__: `a`, `b`.
-    pub fn add01_nequals(&mut self, a: Add01Node, b: Add01Node) -> Add01Node {
+    pub fn add01_nequals(&mut self, a: BddNode, b: BddNode) -> BddNode {
         let result = self.must_node(
             unsafe { Cudd_bddXor(self.mgr, a.0.as_ptr(), b.0.as_ptr()) },
             "Cudd_bddXor",
@@ -318,11 +346,11 @@ impl RefManager {
         self.ref_node(result);
         self.deref_node(a.0);
         self.deref_node(b.0);
-        Add01Node(result)
+        BddNode(result)
     }
 
     /// __Refs__: result; __Derefs__: `a`, `b`.
-    pub fn add01_and(&mut self, a: Add01Node, b: Add01Node) -> Add01Node {
+    pub fn add01_and(&mut self, a: BddNode, b: BddNode) -> BddNode {
         let result = self.must_node(
             unsafe { Cudd_bddAnd(self.mgr, a.0.as_ptr(), b.0.as_ptr()) },
             "Cudd_bddAnd",
@@ -330,11 +358,11 @@ impl RefManager {
         self.ref_node(result);
         self.deref_node(a.0);
         self.deref_node(b.0);
-        Add01Node(result)
+        BddNode(result)
     }
 
     /// __Refs__: result; __Derefs__: `a`, `b`.
-    pub fn add01_or(&mut self, a: Add01Node, b: Add01Node) -> Add01Node {
+    pub fn add01_or(&mut self, a: BddNode, b: BddNode) -> BddNode {
         let result = self.must_node(
             unsafe { Cudd_bddOr(self.mgr, a.0.as_ptr(), b.0.as_ptr()) },
             "Cudd_bddOr",
@@ -342,22 +370,22 @@ impl RefManager {
         self.ref_node(result);
         self.deref_node(a.0);
         self.deref_node(b.0);
-        Add01Node(result)
+        BddNode(result)
     }
 
     /// __Refs__: result; __Derefs__: `a`.
-    pub fn add01_or_abstract(&mut self, a: Add01Node, cube: Add01Node) -> Add01Node {
+    pub fn add01_or_abstract(&mut self, a: BddNode, cube: BddNode) -> BddNode {
         let result = self.must_node(
             unsafe { Cudd_bddExistAbstract(self.mgr, a.0.as_ptr(), cube.0.as_ptr()) },
             "Cudd_bddExistAbstract",
         );
         self.ref_node(result);
         self.deref_node(a.0);
-        Add01Node(result)
+        BddNode(result)
     }
 
     /// __Refs__: result; __Derefs__: `f`, `g`.
-    pub fn add01_and_abstract(&mut self, f: Add01Node, g: Add01Node, cube: Add01Node) -> Add01Node {
+    pub fn bdd_and_abstract(&mut self, f: BddNode, g: BddNode, cube: BddNode) -> BddNode {
         let result = self.must_node(
             unsafe { Cudd_bddAndAbstract(self.mgr, f.0.as_ptr(), g.0.as_ptr(), cube.0.as_ptr()) },
             "Cudd_bddAndAbstract",
@@ -365,11 +393,11 @@ impl RefManager {
         self.ref_node(result);
         self.deref_node(f.0);
         self.deref_node(g.0);
-        Add01Node(result)
+        BddNode(result)
     }
 
     /// __Refs__: result; __Derefs__: `f`.
-    pub fn add01_swap_variables(&mut self, f: Add01Node, x: &[u16], y: &[u16]) -> Add01Node {
+    pub fn add01_swap_variables(&mut self, f: BddNode, x: &[u16], y: &[u16]) -> BddNode {
         assert_eq!(x.len(), y.len());
         let mut xs = Vec::with_capacity(x.len());
         let mut ys = Vec::with_capacity(y.len());
@@ -403,7 +431,7 @@ impl RefManager {
         );
         self.ref_node(result);
         self.deref_node(f.0);
-        Add01Node(result)
+        BddNode(result)
     }
 
     /// __Refs__: result; __Derefs__: `a`, `b`.
@@ -445,7 +473,7 @@ impl RefManager {
     /// __Refs__: result; __Derefs__: `cond`, `then_branch`, `else_branch`.
     pub fn add_ite(
         &mut self,
-        cond: Add01Node,
+        cond: BddNode,
         then_branch: AddNode,
         else_branch: AddNode,
     ) -> AddNode {
@@ -467,21 +495,10 @@ impl RefManager {
         AddNode(result)
     }
 
-    /// __Refs__: result; __Derefs__: `a`.
-    pub fn add01_from_add_pattern(&mut self, a: AddNode) -> Add01Node {
-        let result = self.must_node(
-            unsafe { Cudd_addBddPattern(self.mgr, a.0.as_ptr()) },
-            "Cudd_addBddPattern",
-        );
-        self.ref_node(result);
-        self.deref_node(a.0);
-        Add01Node(result)
-    }
-
     /// __Refs__: result; __Derefs__: `f`.
-    pub fn add_exist_abstract(&mut self, f: AddNode, cube: Add01Node) -> AddNode {
+    pub fn add_exist_abstract(&mut self, f: AddNode, cube: BddNode) -> AddNode {
         self.ref_node(cube.0);
-        let cube_add = self.add01_to_add(cube);
+        let cube_add = self.bdd_to_add(cube);
         let result = self.must_node(
             unsafe { Cudd_addExistAbstract(self.mgr, f.0.as_ptr(), cube_add.0.as_ptr()) },
             "Cudd_addExistAbstract",
@@ -492,59 +509,32 @@ impl RefManager {
         AddNode(result)
     }
 
-    /// __Refs__: result; __Derefs__: `a`.
-    pub fn add01_from_add_threshold(&mut self, a: AddNode, threshold: f64) -> Add01Node {
-        let result = self.must_node(
-            unsafe { Cudd_addBddThreshold(self.mgr, a.0.as_ptr(), threshold) },
-            "Cudd_addBddThreshold",
-        );
-        self.ref_node(result);
-        self.deref_node(a.0);
-        Add01Node(result)
-    }
-
-    /// __Refs__: result; __Derefs__: `a`.
-    pub fn add01_from_add(&mut self, a: AddNode) -> Add01Node {
-        self.add01_from_add_threshold(a, EPS)
-    }
-
-    /// __Refs__: result; __Derefs__: `a`.
-    pub fn add01_to_add(&mut self, a: Add01Node) -> AddNode {
-        let result = self.must_node(
-            unsafe { Cudd_BddToAdd(self.mgr, a.0.as_ptr()) },
-            "Cudd_BddToAdd",
-        );
-        self.ref_node(result);
-        self.deref_node(a.0);
-        AddNode(result)
-    }
-
     /// __Refs__: result; __Derefs__: `a`, `b`.
-    pub fn add_greater_than(&mut self, a: AddNode, b: AddNode) -> Add01Node {
+    pub fn add_greater_than(&mut self, a: AddNode, b: AddNode) -> BddNode {
         let diff = self.add_minus(a, b);
-        self.add01_from_add_threshold(diff, EPS)
+        self.add_to_bdd_threshold(diff, EPS)
     }
 
     /// __Refs__: result; __Derefs__: `a`, `b`.
-    pub fn add_less_than(&mut self, a: AddNode, b: AddNode) -> Add01Node {
+    pub fn add_less_than(&mut self, a: AddNode, b: AddNode) -> BddNode {
         let diff = self.add_minus(b, a);
-        self.add01_from_add_threshold(diff, EPS)
+        self.add_to_bdd_threshold(diff, EPS)
     }
 
     /// __Refs__: result; __Derefs__: `a`, `b`.
-    pub fn add_greater_or_equal(&mut self, a: AddNode, b: AddNode) -> Add01Node {
+    pub fn add_greater_or_equal(&mut self, a: AddNode, b: AddNode) -> BddNode {
         let lt = self.add_less_than(a, b);
         self.add01_not(lt)
     }
 
     /// __Refs__: result; __Derefs__: `a`, `b`.
-    pub fn add_less_or_equal(&mut self, a: AddNode, b: AddNode) -> Add01Node {
+    pub fn add_less_or_equal(&mut self, a: AddNode, b: AddNode) -> BddNode {
         let gt = self.add_greater_than(a, b);
         self.add01_not(gt)
     }
 
     /// __Refs__: result; __Derefs__: `a`, `b`.
-    pub fn add_equals(&mut self, a: AddNode, b: AddNode) -> Add01Node {
+    pub fn add_equals(&mut self, a: AddNode, b: AddNode) -> BddNode {
         self.ref_node(a.0);
         self.ref_node(b.0);
         let gt = self.add_greater_than(a, b);
@@ -554,7 +544,7 @@ impl RefManager {
     }
 
     /// __Refs__: result; __Derefs__: `a`, `b`.
-    pub fn add_nequals(&mut self, a: AddNode, b: AddNode) -> Add01Node {
+    pub fn add_nequals(&mut self, a: AddNode, b: AddNode) -> BddNode {
         self.ref_node(a.0);
         self.ref_node(b.0);
         let gt = self.add_greater_than(a, b);
@@ -563,9 +553,9 @@ impl RefManager {
     }
 
     /// __Refs__: result; __Derefs__: `f`.
-    pub fn add_sum_abstract(&mut self, f: AddNode, cube: Add01Node) -> AddNode {
+    pub fn add_sum_abstract(&mut self, f: AddNode, cube: BddNode) -> AddNode {
         self.ref_node(cube.0);
-        let cube_add = self.add01_to_add(cube);
+        let cube_add = self.bdd_to_add(cube);
         let result = self.must_node(
             unsafe { Cudd_addExistAbstract(self.mgr, f.0.as_ptr(), cube_add.0.as_ptr()) },
             "Cudd_addExistAbstract(sum)",
@@ -576,7 +566,7 @@ impl RefManager {
         AddNode(result)
     }
 
-    pub fn add01_count_minterms(&mut self, rel: Add01Node, num_vars: u32) -> u64 {
+    pub fn add01_count_minterms(&mut self, rel: BddNode, num_vars: u32) -> u64 {
         unsafe { Cudd_CountMinterm(self.mgr, rel.0.as_ptr(), num_vars as i32) }.round() as u64
     }
 
@@ -605,7 +595,7 @@ impl RefManager {
         self.count_nodes_and_terminals(root, &mut visited, &mut terminal_count);
 
         self.ref_node(root);
-        let rel = self.add01_from_add(AddNode(root));
+        let rel = self.add_to_bdd(AddNode(root));
         let minterms = self.add01_count_minterms(rel, num_vars);
         self.deref_node(rel.0);
 
@@ -726,7 +716,7 @@ impl RefManager {
 
     pub fn dump_add01_dot(
         &self,
-        root: Add01Node,
+        root: BddNode,
         path: &str,
         var_names: &HashMap<NodeId, String>,
     ) -> io::Result<()> {
@@ -739,17 +729,17 @@ impl RefManager {
 
         for bm in 0..(1i32 << nodes.len()) {
             self.ref_node(add_one.0);
-            let mut term = Add01Node(add_one.0);
+            let mut term = BddNode(add_one.0);
             for (i, &var) in nodes.iter().enumerate() {
                 self.ref_node(var);
                 let literal = if (bm & (1 << i)) != 0 {
-                    Add01Node(var)
+                    BddNode(var)
                 } else {
-                    self.add01_not(Add01Node(var))
+                    self.add01_not(BddNode(var))
                 };
                 term = self.add01_and(term, literal);
             }
-            let term = self.add01_to_add(term);
+            let term = self.bdd_to_add(term);
             let value = self.add_const(bm as f64);
             let term = self.add_times(term, value);
             result = self.add_plus(result, term);
@@ -759,13 +749,13 @@ impl RefManager {
         result
     }
 
-    pub fn unif(&mut self, m: AddNode, next_var_cube: Add01Node) -> AddNode {
+    pub fn unif(&mut self, m: AddNode, next_var_cube: BddNode) -> AddNode {
         self.ref_node(m.0);
         let denom = self.add_sum_abstract(m, next_var_cube);
 
         self.ref_node(denom.0);
-        let denom_pos = self.add01_from_add_threshold(denom, EPS);
-        let denom_pos_add = self.add01_to_add(denom_pos);
+        let denom_pos = self.add_to_bdd_threshold(denom, EPS);
+        let denom_pos_add = self.bdd_to_add(denom_pos);
         let one = self.add_const(1.0);
         let denom_is_zero_add = self.add_minus(one, denom_pos_add);
         let safe_denom = self.add_plus(denom, denom_is_zero_add);
