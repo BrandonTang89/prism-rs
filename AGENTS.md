@@ -24,7 +24,6 @@
 - `Cudd_addIte` expects an ADD condition; in this repo `add_ite` accepts `BddNode` and converts internally to ADD before calling CUDD.
 
 ## Ref / Leak Checks
-- Do not reintroduce manual per-node ref tracking maps.
 - Leak check path is CUDD-based (`Cudd_CheckZeroRef`) through `RefManager::nonzero_ref_count()`.
 - `RefManager::debug_check()` wraps `Cudd_DebugCheck`; drop-time debug check is gated by `ENABLE_CUDD_DEBUGCHECK_ON_DROP`.
 

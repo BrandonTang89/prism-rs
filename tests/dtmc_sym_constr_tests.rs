@@ -28,6 +28,7 @@ fn test_construction(
     expected_reachable_states: u64,
 ) {
     let model_str = read_model_file(model_path).expect("Failed to read model file");
+
     let mut symbolic_dtmc = construct_symbolic_dtmc(&model_str, const_overrides)
         .expect("Failed to construct symbolic DTMC");
     let stats = symbolic_dtmc.mgr.add_stats(

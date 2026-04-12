@@ -1,31 +1,17 @@
-Okay, I see the issue. Firstly, we are still mixing CUDD 0-1 ADDs and BDDs.
-Note that BDDs in CUDD are represented with complement arcs rather than ADDs
-which don't use complement arcs.
+Okay lets try to see if we can get the debug check to work...
 
-Now, some of the functions require BDDs, and some require ADDs. 
+One thing that I see is that one_bdd and one_add, zero_add, zero_bdd are all not referenced.
 
-Everything that is of the form cudd_bdd* requires bdds, everything that is of the form
-cudd_add* requires adds. Most of the code looks fine, but for example, ate_ite uses
-cudd_addite which actually requires the condition to be an ADD, so we should convert
-the condition from a bdd to an add before calling it, i.e via self.add_to_bdd
+I'm also not sure why we need a refresh_nonzero_ref_baseline. Just before we drop the manager,
+we should hygienically clean up all the refs first, so we shouldnl't have any ned for that if we are doing it correctly.
 
-I previously mentioned that I want everything to be ADDs. But this has changed. Now BddNode will wrap a NodeId that is a BDD, and AddNode will wrap a NodeId that is an ADD. We will have helper functions to convert between the two when necessary.
+The next thing is to improve the way we get statistics:
+    num_nodes no longer has to be done manually. We can just wrap Cudd_DagSize.
 
-Rewrite the code to fix any issues with this that you find, and update the docs comments. We shouldn't have anymore Add01 kind of functions, use BDDs whenever they are required, and convert to ADDs when necessary.
+    We also can wrap Cudd_CountMinTerm to determine the number of min_terms
 
-Furthermore, 
+    We should also expose Cudd_ForeachNode which may be helpful later on.
 
-    #[inline]
-    pub fn regular(self) -> Self {
-        Self(unsafe { Cudd_Regular(self.0) })
-    }
+    We can then use Cudd_ForeachNode to get a vector of terminals (should also be exposed as a function). This can then be used to implement a get_num_terminals function.
 
-    #[inline]
-    pub fn is_complemented(self) -> bool {
-        unsafe { Cudd_IsComplement(self.0) != 0 }
-
-These only make sense for BDDs, so we should move them to BddNode.
-
-The docs for CUDD are given in: https://web.mit.edu/sage/export/tmp/y/usr/share/doc/polybori/cudd/cuddAllDet.html
-
-Read this to know which functions expect BDDs and which expect ADDs.
+Once this works, remove the existing manual recursiion stuff that we have to collate ADD statistics.

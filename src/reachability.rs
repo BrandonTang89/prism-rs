@@ -195,8 +195,10 @@ pub fn compute_reachable_and_filter(dtmc: &mut SymbolicDTMC) {
 
     dtmc.mgr.ref_node(reachable.0);
     let reachable_add = dtmc.mgr.bdd_to_add(reachable);
-    dtmc.mgr.deref_node(dtmc.transitions.0);
-    dtmc.transitions = dtmc.mgr.add_times(dtmc.transitions, reachable_add);
+    let old_transitions = dtmc.transitions;
+    dtmc.mgr.ref_node(old_transitions.0);
+    dtmc.transitions = dtmc.mgr.add_times(old_transitions, reachable_add);
+    dtmc.mgr.deref_node(old_transitions.0);
 
     dtmc.mgr.ref_node(dtmc.transitions.0);
     let filtered_01 = dtmc.mgr.add_to_bdd(dtmc.transitions);

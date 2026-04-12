@@ -9,7 +9,7 @@ use cudd_sys::{
     cudd::{
         Cudd_BddToAdd, Cudd_CheckZeroRef, Cudd_CountMinterm, Cudd_DagSize, Cudd_DebugCheck, Cudd_E,
         Cudd_ForeachNode, Cudd_IsComplement, Cudd_IsConstant, Cudd_IsNonConstant,
-        Cudd_NodeReadIndex, Cudd_Not, Cudd_Quit, Cudd_ReadLogicZero, Cudd_ReadOne, Cudd_ReadSize,
+        Cudd_NodeReadIndex, Cudd_Not, Cudd_Quit, Cudd_ReadLogicZero, Cudd_ReadOne,
         Cudd_RecursiveDeref, Cudd_Ref, Cudd_Regular, Cudd_T, Cudd_V, Cudd_addApply,
         Cudd_addBddPattern, Cudd_addBddThreshold, Cudd_addConst, Cudd_addDivide,
         Cudd_addExistAbstract, Cudd_addIte, Cudd_addIthVar, Cudd_addMinus, Cudd_addPlus,
@@ -22,7 +22,7 @@ use cudd_sys::{
 
 const EPS: f64 = 1e-10;
 pub static LEAK_REPORT_LIMIT: usize = 10;
-const ENABLE_CUDD_DEBUGCHECK_ON_DROP: bool = false;
+const ENABLE_CUDD_DEBUGCHECK_ON_DROP: bool = true;
 
 #[derive(Debug, Clone, Copy)]
 pub struct AddStats {
@@ -153,8 +153,7 @@ impl RefManager {
 
     pub fn nonzero_ref_count(&self) -> usize {
         let raw = unsafe { Cudd_CheckZeroRef(self.mgr) };
-        let projection_refs = unsafe { Cudd_ReadSize(self.mgr) };
-        (raw - projection_refs).max(0) as usize
+        raw as usize
     }
 
     /// Validate manager internal consistency.
@@ -549,11 +548,8 @@ impl RefManager {
 
     pub fn add_stats(&mut self, root: AddNode, num_vars: u32) -> AddStats {
         let root = NodeId(unsafe { Cudd_Regular(root.0.as_ptr()) });
-
-        self.ref_node(root);
-        let rel = self.add_to_bdd(AddNode(root));
-        let minterms = self.bdd_count_minterms(rel, num_vars);
-        self.deref_node(rel.0);
+        let minterms =
+            unsafe { Cudd_CountMinterm(self.mgr, root.as_ptr(), num_vars as i32) }.round() as u64;
 
         AddStats {
             node_count: self.dag_size(root),
