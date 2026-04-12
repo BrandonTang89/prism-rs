@@ -66,8 +66,8 @@ fn test_construction(
 fn assert_zero_refs(report: RefLeakReport) {
     assert_eq!(
         report.nonzero_ref_count, 0,
-        "Expected zero non-zero refs, got {}. Entries: {:?}",
-        report.nonzero_ref_count, report.nonzero_ref_entries
+        "Expected zero non-zero refs, got {}. ",
+        report.nonzero_ref_count
     );
 }
 

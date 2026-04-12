@@ -4,12 +4,11 @@ use tracing::error;
 
 use crate::analyze::DTMCModelInfo;
 use crate::ast::DTMCAst;
-use crate::ref_manager::{BddNode, AddNode, NodeId, RefManager, LEAK_REPORT_LIMIT};
+use crate::ref_manager::{AddNode, BddNode, NodeId, RefManager};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RefLeakReport {
     pub nonzero_ref_count: usize,
-    pub nonzero_ref_entries: Vec<(NodeId, i64)>,
 }
 
 /// Symbolic DTMC representation used by construction and analysis passes.
@@ -55,9 +54,9 @@ impl SymbolicDTMC {
     pub fn new(ast: DTMCAst, info: DTMCModelInfo) -> Self {
         let mut mgr = RefManager::new();
         let transitions = mgr.add_zero();
-        let transitions_01_add = mgr.add01_zero();
-        let next_var_cube = mgr.add01_one();
-        let curr_var_cube = mgr.add01_one();
+        let transitions_01_add = mgr.bdd_zero();
+        let next_var_cube = mgr.bdd_one();
+        let curr_var_cube = mgr.bdd_one();
 
         Self {
             mgr,
@@ -96,7 +95,6 @@ impl SymbolicDTMC {
         if self.released {
             return RefLeakReport {
                 nonzero_ref_count: 0,
-                nonzero_ref_entries: Vec::new(),
             };
         }
 
@@ -119,7 +117,6 @@ impl SymbolicDTMC {
         self.released = true;
         RefLeakReport {
             nonzero_ref_count: self.mgr.nonzero_ref_count(),
-            nonzero_ref_entries: self.mgr.nonzero_ref_entries(LEAK_REPORT_LIMIT),
         }
     }
 
@@ -165,9 +162,6 @@ impl Drop for SymbolicDTMC {
                 "RefManager non-zero refs after owned release: {}",
                 report.nonzero_ref_count
             );
-            for (node, count) in report.nonzero_ref_entries {
-                error!("  {:?} -> {}", node, count);
-            }
         }
     }
 }

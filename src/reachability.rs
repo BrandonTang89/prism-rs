@@ -21,7 +21,7 @@ fn init_value(var_decl: &VarDecl) -> i32 {
 }
 
 fn build_init_add01(dtmc: &mut SymbolicDTMC) -> BddNode {
-    let mut init = dtmc.mgr.add01_one();
+    let mut init = dtmc.mgr.bdd_one();
 
     for module in &dtmc.ast.modules {
         for var_decl in &module.local_vars {
@@ -44,9 +44,9 @@ fn build_init_add01(dtmc: &mut SymbolicDTMC) -> BddNode {
                 let lit = if (encoded & (1u32 << i)) != 0 {
                     BddNode(bit)
                 } else {
-                    dtmc.mgr.add01_not(BddNode(bit))
+                    dtmc.mgr.bdd_not(BddNode(bit))
                 };
-                init = dtmc.mgr.add01_and(init, lit);
+                init = dtmc.mgr.bdd_and(init, lit);
             }
         }
     }
@@ -74,7 +74,7 @@ fn curr_next_var_indices(dtmc: &SymbolicDTMC) -> (Vec<u16>, Vec<u16>) {
 }
 
 fn build_curr_next_identity_add01(dtmc: &mut SymbolicDTMC) -> BddNode {
-    let mut ident = dtmc.mgr.add01_one();
+    let mut ident = dtmc.mgr.bdd_one();
     for module in &dtmc.ast.modules {
         for var_decl in &module.local_vars {
             let var_name = &var_decl.name;
@@ -83,8 +83,8 @@ fn build_curr_next_identity_add01(dtmc: &mut SymbolicDTMC) -> BddNode {
             for (curr, next) in curr_nodes.into_iter().zip(next_nodes.into_iter()) {
                 dtmc.mgr.ref_node(curr);
                 dtmc.mgr.ref_node(next);
-                let eq = dtmc.mgr.add01_equals(BddNode(curr), BddNode(next));
-                ident = dtmc.mgr.add01_and(ident, eq);
+                let eq = dtmc.mgr.bdd_equals(BddNode(curr), BddNode(next));
+                ident = dtmc.mgr.bdd_and(ident, eq);
             }
         }
     }
@@ -95,20 +95,23 @@ fn add_dead_end_self_loops(dtmc: &mut SymbolicDTMC, reachable: BddNode) {
     dtmc.mgr.ref_node(dtmc.transitions_01_add.0);
     let out_curr = dtmc
         .mgr
-        .add01_or_abstract(dtmc.transitions_01_add, dtmc.next_var_cube);
+        .bdd_or_abstract(dtmc.transitions_01_add, dtmc.next_var_cube);
 
     dtmc.mgr.ref_node(out_curr.0);
-    let not_out_curr = dtmc.mgr.add01_not(out_curr);
+    let not_out_curr = dtmc.mgr.bdd_not(out_curr);
 
     dtmc.mgr.ref_node(reachable.0);
-    let dead_end_curr = dtmc.mgr.add01_and(reachable, not_out_curr);
+    let dead_end_curr = dtmc.mgr.bdd_and(reachable, not_out_curr);
     dtmc.mgr.deref_node(out_curr.0);
 
     dtmc.mgr.ref_node(dead_end_curr.0);
     let dead_end_add_for_count = dtmc.mgr.bdd_to_add(dead_end_curr);
+    dtmc.mgr.ref_node(dtmc.curr_var_cube.0);
+    let curr_cube_add = dtmc.mgr.bdd_to_add(dtmc.curr_var_cube);
     let dead_end_count_add = dtmc
         .mgr
-        .add_sum_abstract(dead_end_add_for_count, dtmc.curr_var_cube);
+        .add_sum_abstract(dead_end_add_for_count, curr_cube_add);
+    dtmc.mgr.deref_node(curr_cube_add.0);
     let dead_end_count = dtmc
         .mgr
         .add_value(dead_end_count_add.0)
@@ -119,12 +122,12 @@ fn add_dead_end_self_loops(dtmc: &mut SymbolicDTMC, reachable: BddNode) {
     if dead_end_count > 0 {
         let curr_next_eq = build_curr_next_identity_add01(dtmc);
         dtmc.mgr.ref_node(dead_end_curr.0);
-        let self_loops = dtmc.mgr.add01_and(dead_end_curr, curr_next_eq);
+        let self_loops = dtmc.mgr.bdd_and(dead_end_curr, curr_next_eq);
 
         let old_rel = dtmc.transitions_01_add;
         dtmc.mgr.ref_node(old_rel.0);
         dtmc.mgr.ref_node(self_loops.0);
-        dtmc.transitions_01_add = dtmc.mgr.add01_or(old_rel, self_loops);
+        dtmc.transitions_01_add = dtmc.mgr.bdd_or(old_rel, self_loops);
         dtmc.mgr.deref_node(old_rel.0);
 
         dtmc.mgr.ref_node(self_loops.0);
@@ -160,8 +163,8 @@ pub fn compute_reachable_and_filter(dtmc: &mut SymbolicDTMC) {
             .bdd_and_abstract(old, trans_rel, dtmc.curr_var_cube);
         let image_curr = dtmc
             .mgr
-            .add01_swap_variables(image_next, &next_indices, &curr_indices);
-        let new_reachable = dtmc.mgr.add01_or(old, image_curr);
+            .bdd_swap_variables(image_next, &next_indices, &curr_indices);
+        let new_reachable = dtmc.mgr.bdd_or(old, image_curr);
 
         reachable = new_reachable;
         if new_reachable == old {
@@ -171,9 +174,12 @@ pub fn compute_reachable_and_filter(dtmc: &mut SymbolicDTMC) {
 
     dtmc.mgr.ref_node(reachable.0);
     let reachable_add_for_count = dtmc.mgr.bdd_to_add(reachable);
+    dtmc.mgr.ref_node(dtmc.curr_var_cube.0);
+    let curr_cube_add = dtmc.mgr.bdd_to_add(dtmc.curr_var_cube);
     let reachable_count_add = dtmc
         .mgr
-        .add_sum_abstract(reachable_add_for_count, dtmc.curr_var_cube);
+        .add_sum_abstract(reachable_add_for_count, curr_cube_add);
+    dtmc.mgr.deref_node(curr_cube_add.0);
     let reachable_states = dtmc
         .mgr
         .add_value(reachable_count_add.0)
