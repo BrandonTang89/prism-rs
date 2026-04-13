@@ -24,25 +24,56 @@ pub DTMC: DTMCAst = {
     "dtmc" <items:TopLevelItem*> => {
         let mut modules = Vec::new();
         let mut constants = Vec::new();
+        let mut renamed_modules = Vec::new();
 
-        for (mut item_modules, mut item_constants) in items {
+        for (mut item_modules, mut item_constants, mut item_renamed_modules) in items {
             modules.append(&mut item_modules);
             constants.append(&mut item_constants);
+            renamed_modules.append(&mut item_renamed_modules);
         }
 
-        DTMCAst { modules, constants }
+        DTMCAst { modules, constants, renamed_modules }
     }
 };
 
-TopLevelItem: (Vec<Module>, Vec<(String, ConstDecl)>) = {
-    <module:Module> => (vec![module], vec![]),
-    <constant:ConstDeclStmt> => (vec![], vec![constant]),
+TopLevelItem: (Vec<Module>, Vec<(String, ConstDecl)>, Vec<RenamedModule>) = {
+    <module:Module> => (vec![module], vec![], vec![]),
+    <renamed_module:RenamedModuleDecl> => (vec![], vec![], vec![renamed_module]),
+    <constant:ConstDeclStmt> => (vec![], vec![constant], vec![]),
+    <IgnoredRewardsBlock> => (vec![], vec![], vec![]),
+    <IgnoredLabelDecl> => (vec![], vec![], vec![]),
+    <IgnoredFormulaDecl> => (vec![], vec![], vec![]),
+};
+
+StringLit: String = {
+    r#""[^"\r\n]*""# => {
+        let raw = <>;
+        raw[1..raw.len()-1].to_string()
+    }
+};
+
+IgnoredFormulaDecl: () = {
+    "formula" <Ident> "=" <Expr> ";" => ()
+};
+
+IgnoredLabelDecl: () = {
+    "label" <StringLit> "=" <Expr> ";" => ()
+};
+
+RewardItem: () = {
+    "[" <Comma<Ident>> "]" <Expr> ":" <Expr> ";" => (),
+    <Expr> ":" <Expr> ";" => (),
+};
+
+IgnoredRewardsBlock: () = {
+    "rewards" <StringLit?> <RewardItem*> "endrewards" => ()
 };
 
 ConstTypeDecl: ConstType = {
     "bool" => ConstType::Bool,
     "int" => ConstType::Int,
     "float" => ConstType::Float,
+    "double" => ConstType::Float,
 };
 
 ConstDeclStmt: (String, ConstDecl) = {
@@ -55,6 +86,15 @@ ConstDeclStmt: (String, ConstDecl) = {
 Module: Module = {
     "module" <name:Ident> <local_vars:VarDecl*> <commands:Command*> "endmodule"
         => Module { name, local_vars, commands }
+};
+
+RenamePair: (String, String) = {
+    <from:Ident> "=" <to:Ident> => (from, to),
+};
+
+RenamedModuleDecl: RenamedModule = {
+    "module" <name:Ident> "=" <base:Ident> "[" <renames:Comma<RenamePair>> "]" "endmodule"
+        => RenamedModule { name, base, renames }
 };
 
 VarDecl: VarDecl = {
@@ -139,13 +179,31 @@ Expr: Box<Expr> = {
         op: BinOp::Geq,
         rhs,
     }),
-    <var:Ident> "'" => Box::new(Expr::PrimedIdent(var)),
+    "(" <lhs:Ident> "|" <mid:Ident> "|" <rhs:Ident> ")" => Box::new(Expr::BinOp {
+        lhs: Box::new(Expr::Ident(lhs)),
+        op: BinOp::Or,
+        rhs: Box::new(Expr::BinOp {
+            lhs: Box::new(Expr::Ident(mid)),
+            op: BinOp::Or,
+            rhs: Box::new(Expr::Ident(rhs)),
+        }),
+    }),
+    "(" <lhs:Ident> "||" <mid:Ident> "||" <rhs:Ident> ")" => Box::new(Expr::BinOp {
+        lhs: Box::new(Expr::Ident(lhs)),
+        op: BinOp::Or,
+        rhs: Box::new(Expr::BinOp {
+            lhs: Box::new(Expr::Ident(mid)),
+            op: BinOp::Or,
+            rhs: Box::new(Expr::Ident(rhs)),
+        }),
+    }),
     <var:Ident> => Box::new(Expr::Ident(var)),
     "(" <Expr> ")",
 
     #[precedence(level="2")] #[assoc(side="none")]
     "!" <e:Expr> => Box::new(Expr::UnaryOp { op: UnOp::Not, operand: e }),
     "-" <e:Expr> => Box::new(Expr::UnaryOp { op: UnOp::Neg, operand: e }),
+    <var:Ident> "'" => Box::new(Expr::PrimedIdent(var)),
 
     #[precedence(level="3")] #[assoc(side="left")]
     <lhs:Expr> "*" <rhs:Expr> => Box::new(Expr::BinOp { lhs, op: BinOp::Mul, rhs }),

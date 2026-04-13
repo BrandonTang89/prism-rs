@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+
+use prism_rs::analyze::analyze_dtmc;
 use prism_rs::ast::ConstType;
 use prism_rs::parser::parse_dtmc;
 
@@ -57,4 +60,19 @@ endmodule
 
     let ast = parse_dtmc(model).expect("parse failed");
     assert_eq!(ast.constants.len(), 3);
+}
+
+#[test]
+fn parses_and_expands_herman3_renamed_modules() {
+    let model = std::fs::read_to_string("tests/dtmc/herman3.prism").expect("read failed");
+    let mut ast = parse_dtmc(&model).expect("parse failed");
+
+    assert_eq!(ast.modules.len(), 1);
+    assert_eq!(ast.renamed_modules.len(), 2);
+
+    let info = analyze_dtmc(&mut ast, &HashMap::new()).expect("analysis failed");
+
+    assert_eq!(ast.modules.len(), 3);
+    assert!(ast.renamed_modules.is_empty());
+    assert_eq!(info.module_names.len(), 3);
 }

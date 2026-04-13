@@ -1,17 +1,21 @@
-Okay lets try to see if we can get the debug check to work...
+Let's implement the model renaming feature to allow us to easily reused
 
-One thing that I see is that one_bdd and one_add, zero_add, zero_bdd are all not referenced.
+Look at herman3.prism, particularly at 
 
-I'm also not sure why we need a refresh_nonzero_ref_baseline. Just before we drop the manager,
-we should hygienically clean up all the refs first, so we shouldnl't have any ned for that if we are doing it correctly.
+// add further processes through renaming
+module process2 = process1 [ x1=x2, x3=x1 ] endmodule
+module process3 = process1 [ x1=x3, x3=x2 ] endmodule
 
-The next thing is to improve the way we get statistics:
-    num_nodes no longer has to be done manually. We can just wrap Cudd_DagSize.
+This is the syntax we want to support. We will initially fill in
+DTMCAst::renamed_modules with the renamed modules, then, within
+analyze.rs, we will expand the rename modules into actual modules
+by copying the original module and applying the renaming substitutions
+onto the local variables and update statements.
 
-    We also can wrap Cudd_CountMinTerm to determine the number of min_terms
+This probably involves cloning the base module, then traversing over the
+clone and updating the relevant fields. For deal with subsituting the
+expressions, we probably want a generic function that takes some
+renaming map and applies it to an expression.
 
-    We should also expose Cudd_ForeachNode which may be helpful later on.
-
-    We can then use Cudd_ForeachNode to get a vector of terminals (should also be exposed as a function). This can then be used to implement a get_num_terminals function.
-
-Once this works, remove the existing manual recursiion stuff that we have to collate ADD statistics.
+Once this is done, ensure everything can compile and that the herman3.prism
+test in tests/parser_consts_tests.rs passes.

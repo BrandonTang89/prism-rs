@@ -3,6 +3,7 @@
 pub struct DTMCAst {
     pub modules: Vec<Module>,
     pub constants: Vec<(String, ConstDecl)>,
+    pub renamed_modules: Vec<RenamedModule>,
     // global vars
     // functions, etc.
 }
@@ -113,6 +114,8 @@ pub enum BinOp {
     Div,
 }
 
+
+/// Renamed module declaration
 /// `module mac2 = mac1 [s1=s2, s2=s1,...] endmodule`
 #[derive(Clone, Debug)]
 pub struct RenamedModule {

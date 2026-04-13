@@ -94,6 +94,20 @@ fn dtmc_knuth_die_constr() {
 }
 
 #[test]
+fn dtmc_knuth_two_dice_constr() {
+    // regression + prism comparison test
+    let const_overrides = HashMap::new();
+    test_construction(
+        "tests/dtmc/knuth_two_dice.prism",
+        &const_overrides,
+        274,
+        3,
+        79,
+        45,
+    );
+}
+
+#[test]
 fn dtmc_brp_constr() {
     let mut const_overrides = HashMap::new();
     const_overrides.insert("N".to_string(), "1".to_string());
@@ -105,15 +119,29 @@ fn dtmc_brp_constr() {
 }
 
 #[test]
-fn dtmc_knuth_two_dice_constr() {
+fn dtmc_herman3() {
     // regression + prism comparison test
     let const_overrides = HashMap::new();
     test_construction(
-        "tests/dtmc/knuth_two_dice.prism",
+        "tests/dtmc/herman3.prism",
         &const_overrides,
-        274,
+        24,
         3,
-        79,
-        45,
+        28,
+        8,
+    );
+}
+
+#[test]
+fn dtmc_leader3_2() {
+    // regression + prism comparison test
+    let const_overrides = HashMap::new();
+    test_construction(
+        "tests/dtmc/leader3_2.prism",
+        &const_overrides,
+        408,
+        3,
+        33,
+        26,
     );
 }

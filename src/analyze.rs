@@ -1,5 +1,5 @@
-/// Semantic analysis and normalization for DTMC models.
-use std::collections::HashMap;
+//! Semantic analysis and normalization for DTMC models.
+use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
 use anyhow::{anyhow, bail, Result};
@@ -140,7 +140,9 @@ fn infer_expr_type(expr: &Expr, symbol_types: &HashMap<String, TypeKind>) -> Res
                             rt.as_str()
                         )));
                     }
-                    if lt == TypeKind::Float || rt == TypeKind::Float {
+                    if matches!(op, BinOp::Div) {
+                        Ok(TypeKind::Float)
+                    } else if lt == TypeKind::Float || rt == TypeKind::Float {
                         Ok(TypeKind::Float)
                     } else {
                         Ok(TypeKind::Int)
@@ -261,7 +263,9 @@ fn fold_expr(expr: &Expr, constant_values: &HashMap<String, Expr>) -> Expr {
                 (Expr::IntLit(a), BinOp::Plus, Expr::IntLit(b)) => Expr::IntLit(a + b),
                 (Expr::IntLit(a), BinOp::Minus, Expr::IntLit(b)) => Expr::IntLit(a - b),
                 (Expr::IntLit(a), BinOp::Mul, Expr::IntLit(b)) => Expr::IntLit(a * b),
-                (Expr::IntLit(a), BinOp::Div, Expr::IntLit(b)) => Expr::IntLit(a / b),
+                (Expr::IntLit(a), BinOp::Div, Expr::IntLit(b)) => {
+                    Expr::FloatLit(*a as f64 / *b as f64)
+                }
                 (Expr::BoolLit(a), BinOp::And, Expr::BoolLit(b)) => Expr::BoolLit(*a && *b),
                 (Expr::BoolLit(a), BinOp::Or, Expr::BoolLit(b)) => Expr::BoolLit(*a || *b),
                 (Expr::BoolLit(a), BinOp::Eq, Expr::BoolLit(b)) => Expr::BoolLit(a == b),
@@ -317,6 +321,120 @@ fn fold_expr(expr: &Expr, constant_values: &HashMap<String, Expr>) -> Expr {
 
 fn fold_box_expr(expr: &mut Box<Expr>, constant_values: &HashMap<String, Expr>) {
     **expr = fold_expr(expr.as_ref(), constant_values);
+}
+
+fn rename_expr(expr: &mut Expr, renames: &HashMap<String, String>) {
+    match expr {
+        Expr::BoolLit(_) | Expr::IntLit(_) | Expr::FloatLit(_) => {}
+        Expr::Ident(name) | Expr::PrimedIdent(name) => {
+            if let Some(new_name) = renames.get(name) {
+                *name = new_name.clone();
+            }
+        }
+        Expr::UnaryOp { operand, .. } => rename_expr(operand.as_mut(), renames),
+        Expr::BinOp { lhs, rhs, .. } => {
+            rename_expr(lhs.as_mut(), renames);
+            rename_expr(rhs.as_mut(), renames);
+        }
+        Expr::Ternary {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            rename_expr(cond.as_mut(), renames);
+            rename_expr(then_branch.as_mut(), renames);
+            rename_expr(else_branch.as_mut(), renames);
+        }
+    }
+}
+
+fn rename_box_expr(expr: &mut Box<Expr>, renames: &HashMap<String, String>) {
+    rename_expr(expr.as_mut(), renames);
+}
+
+fn apply_module_renames(module: &mut Module, renames: &HashMap<String, String>) -> Result<()> {
+    for var_decl in &mut module.local_vars {
+        if let Some(new_name) = renames.get(&var_decl.name) {
+            var_decl.name = new_name.clone();
+        } else {
+            bail!(format!(
+                "Renamed module '{}' doesn't rename the local variable '{}'.",
+                module.name, var_decl.name
+            ));
+        }
+
+        match &mut var_decl.var_type {
+            VarType::BoundedInt { lo, hi } => {
+                rename_box_expr(lo, renames);
+                rename_box_expr(hi, renames);
+            }
+            VarType::Bool => {}
+        }
+
+        rename_box_expr(&mut var_decl.init, renames);
+    }
+
+    for command in &mut module.commands {
+        rename_box_expr(&mut command.guard, renames);
+        for update in &mut command.updates {
+            rename_box_expr(&mut update.prob, renames);
+            for assignment in &mut update.assignments {
+                rename_box_expr(assignment, renames);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn expand_renamed_modules(model: &mut DTMCAst) -> Result<()> {
+    if model.renamed_modules.is_empty() {
+        return Ok(());
+    }
+
+    let mut module_names: HashSet<String> = model.modules.iter().map(|m| m.name.clone()).collect();
+    let renamed_modules = std::mem::take(&mut model.renamed_modules);
+
+    for renamed in renamed_modules {
+        if module_names.contains(&renamed.name) {
+            bail!("Duplicate module declaration '{}'.", renamed.name);
+        }
+
+        let mut rename_map = HashMap::new();
+        for (from, to) in &renamed.renames {
+            if let Some(existing) = rename_map.insert(from.clone(), to.clone()) {
+                // allows repeated renames as long as they don't conflict, e.g. [s1=s2, s1=s2] is fine
+                if existing != *to {
+                    bail!(
+                        "Conflicting rename substitution for '{}' in module '{}'.",
+                        from,
+                        renamed.name
+                    );
+                }
+            }
+        }
+
+        let base_module = model
+            .modules
+            .iter()
+            .find(|m| m.name == renamed.base)
+            .cloned()
+            .ok_or_else(|| {
+                anyhow!(
+                    "Renamed module '{}' references unknown base module '{}'.",
+                    renamed.name,
+                    renamed.base
+                )
+            })?;
+
+        let mut expanded = base_module;
+        expanded.name = renamed.name.clone();
+        apply_module_renames(&mut expanded, &rename_map)?;
+
+        module_names.insert(expanded.name.clone());
+        model.modules.push(expanded);
+    }
+
+    Ok(())
 }
 
 fn parse_const_overrides(s: &HashMap<String, String>) -> HashMap<String, String> {
@@ -440,6 +558,8 @@ pub fn analyze_dtmc(
     model: &mut DTMCAst,
     const_overrides: &HashMap<String, String>,
 ) -> Result<DTMCModelInfo> {
+    expand_renamed_modules(model)?;
+
     let const_overrides = parse_const_overrides(const_overrides);
 
     let mut symbol_types: HashMap<String, TypeKind> = HashMap::new();
