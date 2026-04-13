@@ -361,6 +361,8 @@ fn ensure_no_primed_idents(expr: &Expr, where_msg: &str) -> Result<()> {
     }
 }
 
+/// Returns constant names that still have no value expression after applying
+/// CLI overrides.
 fn missing_constant_values(constants: &[(String, ConstDecl)]) -> Vec<String> {
     constants
         .iter()
@@ -368,6 +370,8 @@ fn missing_constant_values(constants: &[(String, ConstDecl)]) -> Vec<String> {
         .collect()
 }
 
+/// Converts a folded constant expression into a resolved literal if it matches
+/// the declared constant type (with int-to-float promotion for float constants).
 fn fold_resolved_const_value(declared_type: &ConstType, folded: Expr) -> Option<Expr> {
     match (declared_type, folded) {
         (ConstType::Bool, Expr::BoolLit(v)) => Some(Expr::BoolLit(v)),
