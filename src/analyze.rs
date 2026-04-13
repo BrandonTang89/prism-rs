@@ -140,9 +140,9 @@ fn infer_expr_type(expr: &Expr, symbol_types: &HashMap<String, TypeKind>) -> Res
                             rt.as_str()
                         )));
                     }
-                    if matches!(op, BinOp::Div) {
-                        Ok(TypeKind::Float)
-                    } else if lt == TypeKind::Float || rt == TypeKind::Float {
+                    let produces_float =
+                        matches!(op, BinOp::Div) || lt == TypeKind::Float || rt == TypeKind::Float;
+                    if produces_float {
                         Ok(TypeKind::Float)
                     } else {
                         Ok(TypeKind::Int)
@@ -361,16 +361,66 @@ fn ensure_no_primed_idents(expr: &Expr, where_msg: &str) -> Result<()> {
     }
 }
 
+/// Returns constant names that still have no value expression after applying
+/// CLI overrides.
+fn missing_constant_values(constants: &[(String, ConstDecl)]) -> Vec<String> {
+    constants
+        .iter()
+        .filter_map(|(name, decl)| decl.value.is_none().then_some(name.clone()))
+        .collect()
+}
+
+/// Converts a folded constant expression into a resolved literal if it matches
+/// the declared constant type (with int-to-float promotion for float constants).
+fn fold_resolved_const_value(declared_type: &ConstType, folded: Expr) -> Option<Expr> {
+    match (declared_type, folded) {
+        (ConstType::Bool, Expr::BoolLit(v)) => Some(Expr::BoolLit(v)),
+        (ConstType::Int, Expr::IntLit(v)) => Some(Expr::IntLit(v)),
+        (ConstType::Float, Expr::FloatLit(v)) => Some(Expr::FloatLit(v)),
+        (ConstType::Float, Expr::IntLit(v)) => Some(Expr::FloatLit(v as f64)),
+        _ => None,
+    }
+}
+
+fn type_check_constant_declarations(
+    constants: &[(String, ConstDecl)],
+    symbol_types: &HashMap<String, TypeKind>,
+) -> Result<()> {
+    for (name, decl) in constants {
+        let value_expr = decl
+            .value
+            .as_ref()
+            .expect("constant missing value should have been validated before type checking");
+        let inferred = infer_expr_type(value_expr, symbol_types)
+            .map_err(|e| anyhow!("In constant '{}': {}", name, e))?;
+        let declared = const_type_to_kind(&decl.const_type);
+        ensure_type_ok(
+            inferred == declared || (declared == TypeKind::Float && inferred == TypeKind::Int),
+            format!(
+                "Type error in constant '{}': declared {} but expression has type {}",
+                name,
+                declared.as_str(),
+                inferred.as_str()
+            ),
+        )?;
+    }
+    Ok(())
+}
+
+/// Applies CLI constant overrides and resolves each constant declaration to a literal value.
+///
+/// The resolution process:
+/// - first applies `--const` overrides to matching declarations,
+/// - requires every constant to have an expression after overrides,
+/// - type-checks each declaration against its declared constant type exactly once,
+/// - folds expressions using already-resolved constants until all values become literals.
 fn apply_and_resolve_constants_for_decls(
-    constants: &mut Vec<(String, ConstDecl)>,
+    constants: &mut [(String, ConstDecl)],
     symbol_types: &HashMap<String, TypeKind>,
     const_overrides: &HashMap<String, String>,
     context: &str,
 ) -> Result<HashMap<String, Expr>> {
-    let mut constant_values: HashMap<String, Option<Expr>> = constants
-        .iter()
-        .map(|(name, _)| (name.clone(), None))
-        .collect();
+    let mut resolved_map: HashMap<String, Expr> = HashMap::new();
 
     for (name, value) in const_overrides {
         let Some(decl) = constants.iter_mut().find(|(n, _)| n == name) else {
@@ -380,70 +430,42 @@ fn apply_and_resolve_constants_for_decls(
         decl.1.value = Some(const_cli_value_expr(value, expected, name)?);
     }
 
+    let missing_values = missing_constant_values(constants);
+    if !missing_values.is_empty() {
+        bail!(
+            "Missing {} constant values: {}",
+            context,
+            missing_values.join(", ")
+        );
+    }
+    type_check_constant_declarations(constants, symbol_types)?;
+
     loop {
         let mut changed = false;
         for (name, decl) in constants.iter_mut() {
-            if constant_values[name].is_some() {
+            if resolved_map.contains_key(name) {
                 continue;
             }
-            let Some(value_expr) = decl.value.as_mut() else {
-                continue;
-            };
+            let value_expr = decl
+                .value
+                .as_mut()
+                .expect("constants missing values are validated before resolution");
 
-            let mut local_types = symbol_types.clone();
-            for (resolved_name, resolved_value) in &constant_values {
-                if let Some(v) = resolved_value {
-                    local_types.insert(
-                        resolved_name.clone(),
-                        infer_expr_type(v, symbol_types)
-                            .expect("resolved constant should have a valid type"),
-                    );
-                }
-            }
-
-            let inferred = infer_expr_type(value_expr, &local_types)
-                .map_err(|e| anyhow!("In constant '{}': {}", name, e))?;
-            let declared = const_type_to_kind(&decl.const_type);
-            ensure_type_ok(
-                inferred == declared || (declared == TypeKind::Float && inferred == TypeKind::Int),
-                format!(
-                    "Type error in constant '{}': declared {} but expression has type {}",
-                    name,
-                    declared.as_str(),
-                    inferred.as_str()
-                ),
-            )?;
-
-            let resolved_map: HashMap<String, Expr> = constant_values
-                .iter()
-                .filter_map(|(k, v)| v.clone().map(|vv| (k.clone(), vv)))
-                .collect();
             let folded = fold_expr(value_expr, &resolved_map);
-            match (&decl.const_type, &folded) {
-                (ConstType::Bool, Expr::BoolLit(_))
-                | (ConstType::Int, Expr::IntLit(_))
-                | (ConstType::Float, Expr::FloatLit(_)) => {
-                    constant_values.insert(name.clone(), Some(folded.clone()));
-                    *value_expr = Box::new(folded);
-                    changed = true;
-                }
-                (ConstType::Float, Expr::IntLit(v)) => {
-                    let as_float = Expr::FloatLit(*v as f64);
-                    constant_values.insert(name.clone(), Some(as_float.clone()));
-                    *value_expr = Box::new(as_float);
-                    changed = true;
-                }
-                _ => {}
+            if let Some(resolved_value) = fold_resolved_const_value(&decl.const_type, folded) {
+                **value_expr = resolved_value.clone();
+                resolved_map.insert(name.clone(), resolved_value);
+                changed = true;
             }
         }
 
-        if constant_values.values().all(|v| v.is_some()) {
+        if resolved_map.len() == constants.len() {
             break;
         }
         if !changed {
-            let unresolved = constant_values
+            let unresolved = constants
                 .iter()
-                .filter_map(|(k, v)| if v.is_none() { Some(k.clone()) } else { None })
+                .filter_map(|(name, _)| (!resolved_map.contains_key(name)).then_some(name.clone()))
                 .collect::<Vec<_>>();
             bail!(
                 "Unresolved {} constant declarations: {}",
@@ -453,10 +475,7 @@ fn apply_and_resolve_constants_for_decls(
         }
     }
 
-    Ok(constant_values
-        .into_iter()
-        .map(|(k, v)| (k, v.expect("all constants resolved")))
-        .collect())
+    Ok(resolved_map)
 }
 
 fn rename_expr(expr: &mut Expr, renames: &HashMap<String, String>) {
@@ -601,11 +620,11 @@ fn analyze_properties(
         };
 
         fold_path_formula(path, constant_values);
+        type_check_path_formula(path, symbol_types)?;
 
         match path {
             PathFormula::Next(phi) => {
                 ensure_no_primed_idents(phi, "In X phi")?;
-                type_check_expr(phi, symbol_types)?;
                 ensure_type_ok(
                     infer_expr_type(phi, symbol_types)? == TypeKind::Bool,
                     "Path formula 'X phi' requires bool phi",
@@ -614,8 +633,6 @@ fn analyze_properties(
             PathFormula::Until { lhs, rhs, bound } => {
                 ensure_no_primed_idents(lhs, "In until lhs formula")?;
                 ensure_no_primed_idents(rhs, "In until rhs formula")?;
-                type_check_expr(lhs, symbol_types)?;
-                type_check_expr(rhs, symbol_types)?;
                 ensure_type_ok(
                     infer_expr_type(lhs, symbol_types)? == TypeKind::Bool,
                     "Until lhs formula must be bool",
@@ -627,7 +644,6 @@ fn analyze_properties(
 
                 if let Some(k) = bound {
                     ensure_no_primed_idents(k, "In bounded until bound expression")?;
-                    type_check_expr(k, symbol_types)?;
                     ensure_type_ok(
                         infer_expr_type(k, symbol_types)? == TypeKind::Int,
                         "Bounded-until bound must have int type",
@@ -644,6 +660,28 @@ fn analyze_properties(
     Ok(())
 }
 
+/// Type-checks all state-formula expressions contained in a path formula.
+///
+/// This pass focuses only on expression typing and returns context-rich error messages.
+fn type_check_path_formula(path: &PathFormula, symbol_types: &HashMap<String, TypeKind>) -> Result<()> {
+    match path {
+        PathFormula::Next(phi) => type_check_expr(phi, symbol_types)
+            .map_err(|e| anyhow!("In X phi expression: {}", e)),
+        PathFormula::Until { lhs, rhs, bound } => {
+            type_check_expr(lhs, symbol_types)
+                .map_err(|e| anyhow!("In until lhs expression: {}", e))?;
+            type_check_expr(rhs, symbol_types)
+                .map_err(|e| anyhow!("In until rhs expression: {}", e))?;
+            if let Some(k) = bound {
+                type_check_expr(k, symbol_types)
+                    .map_err(|e| anyhow!("In bounded-until bound expression: {}", e))?;
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Type-checks one expression against the current symbol table.
 fn type_check_expr(expr: &Expr, symbol_types: &HashMap<String, TypeKind>) -> Result<()> {
     infer_expr_type(expr, symbol_types).map(|_| ())
 }
@@ -651,13 +689,14 @@ fn type_check_expr(expr: &Expr, symbol_types: &HashMap<String, TypeKind>) -> Res
 /// Analyze and normalize a DTMC AST before symbolic translation.
 ///
 /// This pass:
-/// - applies constant overrides,
-/// - type-checks expressions,
-/// - folds constants through all expressions,
-/// - inserts default labels for unlabeled commands,
-/// - validates command label usage,
-/// - validates local variable declarations and bounds,
-/// - computes index maps for modules/actions/variables.
+/// 1. expands renamed modules and builds a global symbol table,
+/// 2. validates `--const` override keys,
+/// 3. applies/validates/folds constant declarations,
+/// 4. folds constants through variable declarations and checks bounds/init expressions,
+/// 5. folds constants through commands and validates guards/probabilities/assignments,
+/// 6. folds constants through properties and validates path formulas,
+/// 7. inserts default labels for unlabeled commands and validates label usage,
+/// 8. collects module/action/variable metadata for symbolic construction.
 pub fn analyze_dtmc(
     model: &mut DTMCAst,
     const_overrides: &HashMap<String, String>,
@@ -789,23 +828,22 @@ pub fn analyze_dtmc(
                         op: BinOp::Eq,
                         rhs,
                     } = assignment.as_ref()
+                        && let Expr::PrimedIdent(name) = lhs.as_ref()
                     {
-                        if let Expr::PrimedIdent(name) = lhs.as_ref() {
-                            let lhs_ty = symbol_types
-                                .get(name)
-                                .copied()
-                                .ok_or_else(|| anyhow!("Unknown assignment target '{}'", name))?;
-                            let rhs_ty = infer_expr_type(rhs, &symbol_types)?;
-                            ensure_type_ok(
-                                lhs_ty == rhs_ty,
-                                format!(
-                                    "Assignment type mismatch for '{}': lhs {}, rhs {}",
-                                    name,
-                                    lhs_ty.as_str(),
-                                    rhs_ty.as_str()
-                                ),
-                            )?;
-                        }
+                        let lhs_ty = symbol_types
+                            .get(name)
+                            .copied()
+                            .ok_or_else(|| anyhow!("Unknown assignment target '{}'", name))?;
+                        let rhs_ty = infer_expr_type(rhs, &symbol_types)?;
+                        ensure_type_ok(
+                            lhs_ty == rhs_ty,
+                            format!(
+                                "Assignment type mismatch for '{}': lhs {}, rhs {}",
+                                name,
+                                lhs_ty.as_str(),
+                                rhs_ty.as_str()
+                            ),
+                        )?;
                     }
                 }
             }
