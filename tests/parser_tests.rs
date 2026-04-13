@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use prism_rs::analyze::analyze_dtmc;
-use prism_rs::ast::ConstType;
-use prism_rs::parser::parse_dtmc;
+use prism_rs::ast::{ConstType, Expr, PathFormula, Property};
+use prism_rs::parser::{parse_dtmc, parse_dtmc_props};
 
 #[test]
 fn parses_interspersed_const_declarations() {
@@ -75,4 +75,59 @@ fn parses_and_expands_herman3_renamed_modules() {
     assert_eq!(ast.modules.len(), 3);
     assert!(ast.renamed_modules.is_empty());
     assert_eq!(info.module_names.len(), 3);
+}
+
+#[test]
+fn parses_knuth_two_dice_prop_file() {
+    let props = std::fs::read_to_string("tests/dtmc/knuth_two_dice.prop").expect("read failed");
+    let (constants, properties) = parse_dtmc_props(&props).expect("parse failed");
+
+    assert_eq!(constants.len(), 1);
+    assert_eq!(constants[0].0, "x");
+    assert_eq!(properties.len(), 2);
+
+    match &properties[0] {
+        Property::ProbQuery(PathFormula::Until { lhs, rhs: _, bound }) => {
+            assert!(matches!(lhs.as_ref(), Expr::BoolLit(true)));
+            assert!(bound.is_none());
+        }
+        other => panic!("unexpected first property: {other:?}"),
+    }
+
+    match &properties[1] {
+        Property::RewardQuery(PathFormula::Until { lhs, rhs: _, bound }) => {
+            assert!(matches!(lhs.as_ref(), Expr::BoolLit(true)));
+            assert!(bound.is_none());
+        }
+        other => panic!("unexpected second property: {other:?}"),
+    }
+}
+
+#[test]
+fn parses_knuth_die_prop_file() {
+    let props = std::fs::read_to_string("tests/dtmc/knuth_die.prop").expect("read failed");
+    let (constants, properties) = parse_dtmc_props(&props).expect("parse failed");
+
+    assert_eq!(constants.len(), 1);
+    assert_eq!(constants[0].0, "x");
+    assert_eq!(properties.len(), 3);
+
+    assert!(matches!(
+        properties[0],
+        Property::ProbQuery(PathFormula::Until { .. })
+    ));
+    assert!(matches!(
+        properties[1],
+        Property::ProbQuery(PathFormula::Next(_))
+    ));
+    match &properties[2] {
+        Property::ProbQuery(PathFormula::Until {
+            lhs: _,
+            rhs: _,
+            bound,
+        }) => {
+            assert!(bound.is_some());
+        }
+        other => panic!("unexpected third property: {other:?}"),
+    }
 }

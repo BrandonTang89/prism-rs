@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use clap::{Parser, ValueEnum};
-use prism_rs::parser::parse_dtmc;
+use prism_rs::parser::{parse_dtmc, parse_dtmc_props};
 use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
 
@@ -25,6 +25,9 @@ struct Args {
 
     #[arg(long = "const")]
     const_values: Option<String>,
+
+    #[arg(long)]
+    props: Option<String>,
 }
 
 fn parse_const_arg(input: &str) -> anyhow::Result<HashMap<String, String>> {
@@ -100,10 +103,38 @@ fn main() {
                     return;
                 }
             };
+
+            if let Some(props_path) = &args.props {
+                println!("Parsing property file: {}", props_path);
+                let props_str = match std::fs::read_to_string(props_path) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        eprintln!("Failed to read property file: {e}");
+                        return;
+                    }
+                };
+                match parse_dtmc_props(&props_str) {
+                    Ok((mut prop_constants, mut properties)) => {
+                        ast.constants.append(&mut prop_constants);
+                        ast.properties.append(&mut properties);
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to parse property file: {e}");
+                        return;
+                    }
+                }
+            }
+
             let info = match prism_rs::analyze::analyze_dtmc(&mut ast, &const_overrides) {
                 Ok(info) => {
                     println!("Model analysis successful:");
                     println!("  Module names: {:?}", info.module_names);
+                    if !ast.properties.is_empty() {
+                        println!("  Properties:");
+                        for (idx, prop) in ast.properties.iter().enumerate() {
+                            println!("    {}. {}", idx + 1, prop);
+                        }
+                    }
                     info
                 }
                 Err(e) => {

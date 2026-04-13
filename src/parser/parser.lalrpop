@@ -32,8 +32,27 @@ pub DTMC: DTMCAst = {
             renamed_modules.append(&mut item_renamed_modules);
         }
 
-        DTMCAst { modules, constants, renamed_modules }
+        DTMCAst { modules, constants, renamed_modules, properties: Vec::new() }
     }
+};
+
+pub DTMCProps: (Vec<(String, ConstDecl)>, Vec<Property>) = {
+    <items:PropTopLevelItem*> => {
+        let mut constants = Vec::new();
+        let mut properties = Vec::new();
+
+        for (mut item_constants, mut item_properties) in items {
+            constants.append(&mut item_constants);
+            properties.append(&mut item_properties);
+        }
+
+        (constants, properties)
+    }
+};
+
+PropTopLevelItem: (Vec<(String, ConstDecl)>, Vec<Property>) = {
+    <constant:ConstDeclStmt> => (vec![constant], vec![]),
+    <property:PropertyStmt> => (vec![], vec![property]),
 };
 
 TopLevelItem: (Vec<Module>, Vec<(String, ConstDecl)>, Vec<RenamedModule>) = {
@@ -81,6 +100,38 @@ ConstDeclStmt: (String, ConstDecl) = {
         => (name, ConstDecl { const_type, value: Some(value) }),
     "const" <const_type:ConstTypeDecl> <name:Ident> ";"
         => (name, ConstDecl { const_type, value: None }),
+};
+
+PropertyStmt: Property = {
+    "P" "=" "?" "[" <psi:PathFormulaExpr> "]"
+        => Property::ProbQuery(psi),
+    "R" "=" "?" "[" <psi:PathFormulaExpr> "]"
+        => Property::RewardQuery(psi),
+};
+
+PathFormulaExpr: PathFormula = {
+    "X" <phi:Expr> => PathFormula::Next(phi),
+    "F" <phi:Expr> => PathFormula::Until {
+        lhs: Box::new(Expr::BoolLit(true)),
+        rhs: phi,
+        bound: None,
+    },
+    <lhs:Expr> "U" "<=" <k:BoundExpr> <rhs:Expr> => PathFormula::Until {
+        lhs,
+        rhs,
+        bound: Some(k),
+    },
+    <lhs:Expr> "U" <rhs:Expr> => PathFormula::Until {
+        lhs,
+        rhs,
+        bound: None,
+    },
+};
+
+BoundExpr: Box<Expr> = {
+    r"[0-9]+" => Box::new(Expr::IntLit(i32::from_str(<>).unwrap())),
+    <var:Ident> => Box::new(Expr::Ident(var)),
+    "(" <BoundExpr> ")",
 };
 
 Module: Module = {

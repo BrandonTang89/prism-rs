@@ -323,6 +323,142 @@ fn fold_box_expr(expr: &mut Box<Expr>, constant_values: &HashMap<String, Expr>) 
     **expr = fold_expr(expr.as_ref(), constant_values);
 }
 
+fn fold_path_formula(path: &mut PathFormula, constant_values: &HashMap<String, Expr>) {
+    match path {
+        PathFormula::Next(phi) => fold_box_expr(phi, constant_values),
+        PathFormula::Until { lhs, rhs, bound } => {
+            fold_box_expr(lhs, constant_values);
+            fold_box_expr(rhs, constant_values);
+            if let Some(k) = bound {
+                fold_box_expr(k, constant_values);
+            }
+        }
+    }
+}
+
+fn ensure_no_primed_idents(expr: &Expr, where_msg: &str) -> Result<()> {
+    match expr {
+        Expr::PrimedIdent(name) => bail!(
+            "{}: primed identifier '{}' is not allowed in property state formulas.",
+            where_msg,
+            name
+        ),
+        Expr::UnaryOp { operand, .. } => ensure_no_primed_idents(operand, where_msg),
+        Expr::BinOp { lhs, rhs, .. } => {
+            ensure_no_primed_idents(lhs, where_msg)?;
+            ensure_no_primed_idents(rhs, where_msg)
+        }
+        Expr::Ternary {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            ensure_no_primed_idents(cond, where_msg)?;
+            ensure_no_primed_idents(then_branch, where_msg)?;
+            ensure_no_primed_idents(else_branch, where_msg)
+        }
+        Expr::BoolLit(_) | Expr::IntLit(_) | Expr::FloatLit(_) | Expr::Ident(_) => Ok(()),
+    }
+}
+
+fn apply_and_resolve_constants_for_decls(
+    constants: &mut Vec<(String, ConstDecl)>,
+    symbol_types: &HashMap<String, TypeKind>,
+    const_overrides: &HashMap<String, String>,
+    context: &str,
+) -> Result<HashMap<String, Expr>> {
+    let mut constant_values: HashMap<String, Option<Expr>> = constants
+        .iter()
+        .map(|(name, _)| (name.clone(), None))
+        .collect();
+
+    for (name, value) in const_overrides {
+        let Some(decl) = constants.iter_mut().find(|(n, _)| n == name) else {
+            continue;
+        };
+        let expected = const_type_to_kind(&decl.1.const_type);
+        decl.1.value = Some(const_cli_value_expr(value, expected, name)?);
+    }
+
+    loop {
+        let mut changed = false;
+        for (name, decl) in constants.iter_mut() {
+            if constant_values[name].is_some() {
+                continue;
+            }
+            let Some(value_expr) = decl.value.as_mut() else {
+                continue;
+            };
+
+            let mut local_types = symbol_types.clone();
+            for (resolved_name, resolved_value) in &constant_values {
+                if let Some(v) = resolved_value {
+                    local_types.insert(
+                        resolved_name.clone(),
+                        infer_expr_type(v, symbol_types)
+                            .expect("resolved constant should have a valid type"),
+                    );
+                }
+            }
+
+            let inferred = infer_expr_type(value_expr, &local_types)
+                .map_err(|e| anyhow!("In constant '{}': {}", name, e))?;
+            let declared = const_type_to_kind(&decl.const_type);
+            ensure_type_ok(
+                inferred == declared || (declared == TypeKind::Float && inferred == TypeKind::Int),
+                format!(
+                    "Type error in constant '{}': declared {} but expression has type {}",
+                    name,
+                    declared.as_str(),
+                    inferred.as_str()
+                ),
+            )?;
+
+            let resolved_map: HashMap<String, Expr> = constant_values
+                .iter()
+                .filter_map(|(k, v)| v.clone().map(|vv| (k.clone(), vv)))
+                .collect();
+            let folded = fold_expr(value_expr, &resolved_map);
+            match (&decl.const_type, &folded) {
+                (ConstType::Bool, Expr::BoolLit(_))
+                | (ConstType::Int, Expr::IntLit(_))
+                | (ConstType::Float, Expr::FloatLit(_)) => {
+                    constant_values.insert(name.clone(), Some(folded.clone()));
+                    *value_expr = Box::new(folded);
+                    changed = true;
+                }
+                (ConstType::Float, Expr::IntLit(v)) => {
+                    let as_float = Expr::FloatLit(*v as f64);
+                    constant_values.insert(name.clone(), Some(as_float.clone()));
+                    *value_expr = Box::new(as_float);
+                    changed = true;
+                }
+                _ => {}
+            }
+        }
+
+        if constant_values.values().all(|v| v.is_some()) {
+            break;
+        }
+        if !changed {
+            let unresolved = constant_values
+                .iter()
+                .filter_map(|(k, v)| if v.is_none() { Some(k.clone()) } else { None })
+                .collect::<Vec<_>>();
+            bail!(
+                "Unresolved {} constant declarations: {}",
+                context,
+                unresolved.join(", ")
+            );
+        }
+    }
+
+    Ok(constant_values
+        .into_iter()
+        .map(|(k, v)| (k, v.expect("all constants resolved")))
+        .collect())
+}
+
 fn rename_expr(expr: &mut Expr, renames: &HashMap<String, String>) {
     match expr {
         Expr::BoolLit(_) | Expr::IntLit(_) | Expr::FloatLit(_) => {}
@@ -446,98 +582,66 @@ fn apply_and_resolve_constants(
     symbol_types: &HashMap<String, TypeKind>,
     const_overrides: &HashMap<String, String>,
 ) -> Result<HashMap<String, Expr>> {
-    let mut constant_values: HashMap<String, Option<Expr>> = model
-        .constants
-        .iter()
-        .map(|(name, _)| (name.clone(), None))
-        .collect();
+    apply_and_resolve_constants_for_decls(
+        &mut model.constants,
+        symbol_types,
+        const_overrides,
+        "model",
+    )
+}
 
-    for (name, value) in const_overrides {
-        let decl = model
-            .constants
-            .iter_mut()
-            .find(|(n, _)| n == name)
-            .ok_or_else(|| anyhow!("Unknown constant in --const override: '{}'", name))?;
-        let expected = const_type_to_kind(&decl.1.const_type);
-        decl.1.value = Some(const_cli_value_expr(value, expected, name)?);
-    }
+fn analyze_properties(
+    properties: &mut [Property],
+    symbol_types: &HashMap<String, TypeKind>,
+    constant_values: &HashMap<String, Expr>,
+) -> Result<()> {
+    for property in properties {
+        let path = match property {
+            Property::ProbQuery(path) | Property::RewardQuery(path) => path,
+        };
 
-    loop {
-        let mut changed = false;
-        for (name, decl) in &mut model.constants {
-            if constant_values[name].is_some() {
-                continue;
+        fold_path_formula(path, constant_values);
+
+        match path {
+            PathFormula::Next(phi) => {
+                ensure_no_primed_idents(phi, "In X phi")?;
+                type_check_expr(phi, symbol_types)?;
+                ensure_type_ok(
+                    infer_expr_type(phi, symbol_types)? == TypeKind::Bool,
+                    "Path formula 'X phi' requires bool phi",
+                )?;
             }
-            let Some(value_expr) = decl.value.as_mut() else {
-                continue;
-            };
+            PathFormula::Until { lhs, rhs, bound } => {
+                ensure_no_primed_idents(lhs, "In until lhs formula")?;
+                ensure_no_primed_idents(rhs, "In until rhs formula")?;
+                type_check_expr(lhs, symbol_types)?;
+                type_check_expr(rhs, symbol_types)?;
+                ensure_type_ok(
+                    infer_expr_type(lhs, symbol_types)? == TypeKind::Bool,
+                    "Until lhs formula must be bool",
+                )?;
+                ensure_type_ok(
+                    infer_expr_type(rhs, symbol_types)? == TypeKind::Bool,
+                    "Until rhs formula must be bool",
+                )?;
 
-            let mut local_types = symbol_types.clone();
-            for (resolved_name, resolved_value) in &constant_values {
-                if let Some(v) = resolved_value {
-                    local_types.insert(
-                        resolved_name.clone(),
-                        infer_expr_type(v, symbol_types)
-                            .expect("resolved constant should have a valid type"),
-                    );
+                if let Some(k) = bound {
+                    ensure_no_primed_idents(k, "In bounded until bound expression")?;
+                    type_check_expr(k, symbol_types)?;
+                    ensure_type_ok(
+                        infer_expr_type(k, symbol_types)? == TypeKind::Int,
+                        "Bounded-until bound must have int type",
+                    )?;
+                    ensure_type_ok(
+                        matches!(k.as_ref(), Expr::IntLit(v) if *v >= 0),
+                        "Bounded-until bound must fold to a non-negative integer literal",
+                    )?;
                 }
             }
-
-            let inferred = infer_expr_type(value_expr, &local_types)
-                .map_err(|e| anyhow!("In constant '{}': {}", name, e))?;
-            let declared = const_type_to_kind(&decl.const_type);
-            ensure_type_ok(
-                inferred == declared || (declared == TypeKind::Float && inferred == TypeKind::Int),
-                format!(
-                    "Type error in constant '{}': declared {} but expression has type {}",
-                    name,
-                    declared.as_str(),
-                    inferred.as_str()
-                ),
-            )?;
-
-            let resolved_map: HashMap<String, Expr> = constant_values
-                .iter()
-                .filter_map(|(k, v)| v.clone().map(|vv| (k.clone(), vv)))
-                .collect();
-            let folded = fold_expr(value_expr, &resolved_map);
-            match (&decl.const_type, &folded) {
-                (ConstType::Bool, Expr::BoolLit(_))
-                | (ConstType::Int, Expr::IntLit(_))
-                | (ConstType::Float, Expr::FloatLit(_)) => {
-                    constant_values.insert(name.clone(), Some(folded.clone()));
-                    *value_expr = Box::new(folded);
-                    changed = true;
-                }
-                (ConstType::Float, Expr::IntLit(v)) => {
-                    let as_float = Expr::FloatLit(*v as f64);
-                    constant_values.insert(name.clone(), Some(as_float.clone()));
-                    *value_expr = Box::new(as_float);
-                    changed = true;
-                }
-                _ => {}
-            }
-        }
-
-        if constant_values.values().all(|v| v.is_some()) {
-            break;
-        }
-        if !changed {
-            let unresolved = constant_values
-                .iter()
-                .filter_map(|(k, v)| if v.is_none() { Some(k.clone()) } else { None })
-                .collect::<Vec<_>>();
-            bail!(
-                "Unresolved constant declarations: {}",
-                unresolved.join(", ")
-            );
         }
     }
 
-    Ok(constant_values
-        .into_iter()
-        .map(|(k, v)| (k, v.expect("all constants resolved")))
-        .collect())
+    Ok(())
 }
 
 fn type_check_expr(expr: &Expr, symbol_types: &HashMap<String, TypeKind>) -> Result<()> {
@@ -578,6 +682,12 @@ pub fn analyze_dtmc(
             if symbol_types.insert(var_decl.name.clone(), kind).is_some() {
                 bail!("Duplicate symbol declaration '{}'.", var_decl.name);
             }
+        }
+    }
+
+    for name in const_overrides.keys() {
+        if !model.constants.iter().any(|(n, _)| n == name) {
+            bail!("Unknown constant in --const override: '{}'", name);
         }
     }
 
@@ -673,6 +783,8 @@ pub fn analyze_dtmc(
             }
         }
     }
+
+    analyze_properties(&mut model.properties, &symbol_types, &constant_values)?;
 
     let mut synchronisation_labels: HashMap<String, Vec<String>> = HashMap::new();
     let mut local_variables: HashMap<String, String> = HashMap::new();
