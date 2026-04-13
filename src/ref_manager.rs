@@ -1003,6 +1003,7 @@ impl RefManager {
 }
 
 impl Default for RefManager {
+    /// Creates a manager using the same default CUDD initialization as [`RefManager::new`].
     fn default() -> Self {
         Self::new()
     }

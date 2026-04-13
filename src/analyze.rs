@@ -140,10 +140,9 @@ fn infer_expr_type(expr: &Expr, symbol_types: &HashMap<String, TypeKind>) -> Res
                             rt.as_str()
                         )));
                     }
-                    if matches!(op, BinOp::Div)
-                        || lt == TypeKind::Float
-                        || rt == TypeKind::Float
-                    {
+                    let produces_float =
+                        matches!(op, BinOp::Div) || lt == TypeKind::Float || rt == TypeKind::Float;
+                    if produces_float {
                         Ok(TypeKind::Float)
                     } else {
                         Ok(TypeKind::Int)
