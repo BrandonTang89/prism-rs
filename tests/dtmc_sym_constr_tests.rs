@@ -145,3 +145,17 @@ fn dtmc_leader3_2() {
         26,
     );
 }
+
+#[test]
+fn dtmc_simple2() {
+    // regression + prism comparison test
+    let const_overrides = HashMap::new();
+    test_construction(
+        "tests/dtmc/simple2_dtmc.prism",
+        &const_overrides,
+        26,
+        4,
+        9,
+        6,
+    );
+}
