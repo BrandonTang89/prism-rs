@@ -382,12 +382,40 @@ fn fold_resolved_const_value(declared_type: &ConstType, folded: Expr) -> Option<
     }
 }
 
+fn type_check_constant_declarations(
+    constants: &[(String, ConstDecl)],
+    symbol_types: &HashMap<String, TypeKind>,
+) -> Result<()> {
+    for (name, decl) in constants {
+        let value_expr = decl
+            .value
+            .as_ref()
+            .expect("constants missing values are validated before type checking");
+        type_check_expr(value_expr, symbol_types)
+            .map_err(|e| anyhow!("In constant '{}': {}", name, e))?;
+
+        let inferred = infer_expr_type(value_expr, symbol_types)
+            .map_err(|e| anyhow!("In constant '{}': {}", name, e))?;
+        let declared = const_type_to_kind(&decl.const_type);
+        ensure_type_ok(
+            inferred == declared || (declared == TypeKind::Float && inferred == TypeKind::Int),
+            format!(
+                "Type error in constant '{}': declared {} but expression has type {}",
+                name,
+                declared.as_str(),
+                inferred.as_str()
+            ),
+        )?;
+    }
+    Ok(())
+}
+
 /// Applies CLI constant overrides and resolves each constant declaration to a literal value.
 ///
 /// The resolution process:
 /// - first applies `--const` overrides to matching declarations,
 /// - requires every constant to have an expression after overrides,
-/// - type-checks each declaration against its declared constant type,
+/// - type-checks each declaration against its declared constant type exactly once,
 /// - folds expressions using already-resolved constants until all values become literals.
 fn apply_and_resolve_constants_for_decls(
     constants: &mut [(String, ConstDecl)],
@@ -413,6 +441,7 @@ fn apply_and_resolve_constants_for_decls(
             missing_values.join(", ")
         );
     }
+    type_check_constant_declarations(constants, symbol_types)?;
 
     loop {
         let mut changed = false;
@@ -424,19 +453,6 @@ fn apply_and_resolve_constants_for_decls(
                 .value
                 .as_mut()
                 .expect("constants missing values are validated before resolution");
-
-            let inferred = infer_expr_type(value_expr, symbol_types)
-                .map_err(|e| anyhow!("In constant '{}': {}", name, e))?;
-            let declared = const_type_to_kind(&decl.const_type);
-            ensure_type_ok(
-                inferred == declared || (declared == TypeKind::Float && inferred == TypeKind::Int),
-                format!(
-                    "Type error in constant '{}': declared {} but expression has type {}",
-                    name,
-                    declared.as_str(),
-                    inferred.as_str()
-                ),
-            )?;
 
             let folded = fold_expr(value_expr, &resolved_map);
             if let Some(resolved_value) = fold_resolved_const_value(&decl.const_type, folded) {
@@ -676,13 +692,14 @@ fn type_check_expr(expr: &Expr, symbol_types: &HashMap<String, TypeKind>) -> Res
 /// Analyze and normalize a DTMC AST before symbolic translation.
 ///
 /// This pass:
-/// - applies constant overrides,
-/// - type-checks expressions,
-/// - folds constants through all expressions,
-/// - inserts default labels for unlabeled commands,
-/// - validates command label usage,
-/// - validates local variable declarations and bounds,
-/// - computes index maps for modules/actions/variables.
+/// 1. expands renamed modules and builds a global symbol table,
+/// 2. validates `--const` override keys,
+/// 3. applies/validates/folds constant declarations,
+/// 4. folds constants through variable declarations and checks bounds/init expressions,
+/// 5. folds constants through commands and validates guards/probabilities/assignments,
+/// 6. folds constants through properties and validates path formulas,
+/// 7. inserts default labels for unlabeled commands and validates label usage,
+/// 8. collects module/action/variable metadata for symbolic construction.
 pub fn analyze_dtmc(
     model: &mut DTMCAst,
     const_overrides: &HashMap<String, String>,
