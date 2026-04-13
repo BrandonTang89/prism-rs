@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use clap::{Parser, ValueEnum};
+use prism_rs::ast::Expr;
 use prism_rs::parser::{parse_dtmc, parse_dtmc_props};
 use prism_rs::sym_check::{evaluate_property_at_initial_state, PropertyEvaluation};
 use tracing::Level;
@@ -169,6 +170,18 @@ fn main() {
                 Ok(info) => {
                     println!("Model analysis successful:");
                     println!("  Module names: {:?}", info.module_names);
+                    println!("  Initial state:");
+                    for module in &ast.modules {
+                        for var_decl in &module.local_vars {
+                            let init_str = match var_decl.init.as_ref() {
+                                Expr::BoolLit(v) => v.to_string(),
+                                Expr::IntLit(v) => v.to_string(),
+                                Expr::FloatLit(v) => v.to_string(),
+                                other => format!("{other}"),
+                            };
+                            println!("    {} = {}", var_decl.name, init_str);
+                        }
+                    }
                     if !ast.properties.is_empty() {
                         println!("  Properties:");
                         for (idx, prop) in ast.properties.iter().enumerate() {

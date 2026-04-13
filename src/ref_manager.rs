@@ -16,20 +16,21 @@ use std::{
     collections::{HashMap, HashSet},
     fs::File,
     io::{self, Write},
+    os::raw::c_int,
     ptr,
 };
 
 use cudd_sys::{
     cudd::{
         Cudd_BddToAdd, Cudd_CheckZeroRef, Cudd_CountMinterm, Cudd_DagSize, Cudd_DebugCheck, Cudd_E,
-        Cudd_ForeachNode, Cudd_IsComplement, Cudd_IsConstant, Cudd_NodeReadIndex, Cudd_Not,
-        Cudd_Quit, Cudd_ReadLogicZero, Cudd_ReadOne, Cudd_RecursiveDeref, Cudd_Ref, Cudd_Regular,
-        Cudd_T, Cudd_V, Cudd_addApply, Cudd_addBddPattern, Cudd_addBddThreshold, Cudd_addConst,
-        Cudd_addDivide, Cudd_addExistAbstract, Cudd_addIte, Cudd_addIthVar, Cudd_addMatrixMultiply,
-        Cudd_addMinus, Cudd_addPlus, Cudd_addSwapVariables, Cudd_addTimes, Cudd_bddAnd,
-        Cudd_bddAndAbstract, Cudd_bddExistAbstract, Cudd_bddIthVar, Cudd_bddNewVar, Cudd_bddOr,
-        Cudd_bddSwapVariables, Cudd_bddXnor, Cudd_bddXor, CUDD_CACHE_SLOTS, CUDD_UNIQUE_SLOTS,
-        DD_APPLY_OPERATOR,
+        Cudd_Eval, Cudd_ForeachNode, Cudd_IsComplement, Cudd_IsConstant, Cudd_NodeReadIndex,
+        Cudd_Not, Cudd_Quit, Cudd_ReadLogicZero, Cudd_ReadOne, Cudd_ReadSize, Cudd_RecursiveDeref,
+        Cudd_Ref, Cudd_Regular, Cudd_T, Cudd_V, Cudd_addApply, Cudd_addBddPattern,
+        Cudd_addBddThreshold, Cudd_addConst, Cudd_addDivide, Cudd_addExistAbstract, Cudd_addIte,
+        Cudd_addIthVar, Cudd_addMatrixMultiply, Cudd_addMinus, Cudd_addPlus, Cudd_addSwapVariables,
+        Cudd_addTimes, Cudd_bddAnd, Cudd_bddAndAbstract, Cudd_bddExistAbstract, Cudd_bddIthVar,
+        Cudd_bddNewVar, Cudd_bddOr, Cudd_bddSwapVariables, Cudd_bddXnor, Cudd_bddXor,
+        CUDD_CACHE_SLOTS, CUDD_UNIQUE_SLOTS, DD_APPLY_OPERATOR,
     },
     DdManager, DdNode,
 };
@@ -194,6 +195,11 @@ impl RefManager {
         raw as usize
     }
 
+    /// Returns the number of DD variables currently allocated in the manager.
+    pub fn var_count(&self) -> usize {
+        unsafe { Cudd_ReadSize(self.mgr) as usize }
+    }
+
     /// Validate manager internal consistency.
     pub fn debug_check(&self) -> bool {
         unsafe { Cudd_DebugCheck(self.mgr) == 0 }
@@ -252,6 +258,67 @@ impl RefManager {
             }
         } else {
             None
+        }
+    }
+
+    /// Evaluates ADD `f` at a concrete valuation and returns the terminal value.
+    ///
+    /// `inputs` is indexed by DD variable index and must contain at least
+    /// `self.var_count()` entries with values `0` or `1`.
+    pub fn add_eval_value(&self, f: AddNode, inputs: &[i32]) -> f64 {
+        let required = self.var_count();
+        assert!(
+            inputs.len() >= required,
+            "inputs length {} smaller than DD var count {}",
+            inputs.len(),
+            required
+        );
+
+        let mut eval_inputs: Vec<c_int> = inputs.iter().map(|&v| v as c_int).collect();
+        let terminal = self.must_node(
+            unsafe { Cudd_Eval(self.mgr, f.0.as_ptr(), eval_inputs.as_mut_ptr()) },
+            "Cudd_Eval",
+        );
+        self.add_value(terminal)
+            .expect("Cudd_Eval on ADD must return terminal")
+    }
+
+    /// Extracts one satisfying valuation from a BDD by following a deterministic path.
+    ///
+    /// The traversal prefers the ELSE branch whenever it is not the zero function;
+    /// otherwise it takes the THEN branch. This gives a stable assignment extraction
+    /// strategy that is useful for evaluating DDs at any witness state.
+    ///
+    /// Returned vector is indexed by DD variable index and contains 0/1 values.
+    /// Variables not encountered along the path remain 0, which is valid because
+    /// they are don't-care for the selected path.
+    ///
+    /// Returns `None` iff `root` is the zero BDD (unsatisfiable).
+    pub fn extract_leftmost_path_from_bdd(&self, root: BddNode) -> Option<Vec<i32>> {
+        let mut inputs = vec![0_i32; self.var_count()];
+        let zero = self.zero_bdd().0;
+        let mut node = root.0;
+
+        loop {
+            if self.is_constant(node) {
+                return if node == zero { None } else { Some(inputs) };
+            }
+
+            let var_index = self.read_var_index(node) as usize;
+            let else_node = self.read_else(node);
+            if else_node != zero {
+                inputs[var_index] = 0;
+                node = else_node;
+                continue;
+            }
+
+            let reg = self.regular_node(node);
+            let mut then_node = Node(unsafe { Cudd_T(reg.as_ptr()) });
+            if self.is_complemented_node(node) {
+                then_node = Node(unsafe { Cudd_Not(then_node.as_ptr()) });
+            }
+            inputs[var_index] = 1;
+            node = then_node;
         }
     }
 
@@ -437,7 +504,7 @@ impl RefManager {
     ///
     /// _Refs_: result\
     /// _Derefs_: f
-    pub fn add_swap_variables(&mut self, f: AddNode, x: &[u16], y: &[u16]) -> AddNode {
+    pub fn add_swap_vars(&mut self, f: AddNode, x: &[u16], y: &[u16]) -> AddNode {
         assert_eq!(x.len(), y.len());
         let mut xs = Vec::with_capacity(x.len());
         let mut ys = Vec::with_capacity(y.len());

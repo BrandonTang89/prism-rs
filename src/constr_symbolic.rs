@@ -88,6 +88,23 @@ fn allocate_dd_vars(dtmc: &mut SymbolicDTMC) {
             );
         }
     }
+
+    let mut curr_var_indices = Vec::new();
+    let mut next_var_indices = Vec::new();
+    for module in &dtmc.ast.modules {
+        for var_decl in &module.local_vars {
+            let var_name = &var_decl.name;
+            for (&curr, &next) in dtmc.var_curr_nodes[var_name]
+                .iter()
+                .zip(dtmc.var_next_nodes[var_name].iter())
+            {
+                curr_var_indices.push(dtmc.mgr.read_var_index(curr));
+                next_var_indices.push(dtmc.mgr.read_var_index(next));
+            }
+        }
+    }
+    dtmc.curr_var_indices = curr_var_indices;
+    dtmc.next_var_indices = next_var_indices;
 }
 
 /// Return ADD encoding of variable value (`curr` or `next`) with lower-bound offset.

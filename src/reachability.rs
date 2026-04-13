@@ -1,26 +1,10 @@
-use crate::ast::{Expr, VarDecl, VarType};
+use crate::ast::utils::init_value;
 use crate::ref_manager::BddNode;
 use crate::symbolic_dtmc::SymbolicDTMC;
 
-fn init_value(var_decl: &VarDecl) -> i32 {
-    match (&var_decl.var_type, &*var_decl.init) {
-        (VarType::BoundedInt { .. }, Expr::IntLit(v)) => *v,
-        (VarType::Bool, Expr::BoolLit(b)) => {
-            if *b {
-                1
-            } else {
-                0
-            }
-        }
-        (VarType::Bool, Expr::IntLit(v)) if *v == 0 || *v == 1 => *v,
-        _ => panic!(
-            "Unsupported init expression for variable '{}': {:?}",
-            var_decl.name, var_decl.init
-        ),
-    }
-}
-
 fn build_init_add01(dtmc: &mut SymbolicDTMC) -> BddNode {
+    // Analysis ensures init expressions are folded literals and bounds-checked.
+    // Any violation here indicates an internal pipeline bug.
     let mut init = dtmc.mgr.bdd_one();
 
     for module in &dtmc.ast.modules {
@@ -28,14 +12,7 @@ fn build_init_add01(dtmc: &mut SymbolicDTMC) -> BddNode {
             let var_name = var_decl.name.clone();
             let (lo, hi) = dtmc.info.var_bounds[&var_name];
             let init_val = init_value(var_decl);
-            assert!(
-                init_val >= lo && init_val <= hi,
-                "Initial value of '{}' out of bounds: {} not in [{}..{}]",
-                var_name,
-                init_val,
-                lo,
-                hi
-            );
+            assert!(init_val >= lo && init_val <= hi);
 
             let encoded = (init_val - lo) as u32;
             let curr_nodes = dtmc.var_curr_nodes[&var_name].clone();
@@ -51,26 +28,17 @@ fn build_init_add01(dtmc: &mut SymbolicDTMC) -> BddNode {
         }
     }
 
+    dtmc.mgr.ref_node(init.0);
+    let init_add_for_count = dtmc.mgr.bdd_to_add(init);
+    dtmc.mgr.ref_node(dtmc.curr_var_cube.0);
+    let curr_cube_add = dtmc.mgr.bdd_to_add(dtmc.curr_var_cube);
+    let init_count_add = dtmc.mgr.add_sum_abstract(init_add_for_count, curr_cube_add);
+    dtmc.mgr.deref_node(curr_cube_add.0);
+    let init_count = dtmc.mgr.add_value(init_count_add.0).unwrap_or(0.0);
+    dtmc.mgr.deref_node(init_count_add.0);
+    debug_assert!((init_count - 1.0).abs() < 1e-10);
+
     init
-}
-
-fn curr_next_var_indices(dtmc: &SymbolicDTMC) -> (Vec<u16>, Vec<u16>) {
-    let mut curr_indices = Vec::new();
-    let mut next_indices = Vec::new();
-
-    for module in &dtmc.ast.modules {
-        for var_decl in &module.local_vars {
-            let var_name = &var_decl.name;
-            let curr_nodes = &dtmc.var_curr_nodes[var_name];
-            let next_nodes = &dtmc.var_next_nodes[var_name];
-            for (&curr, &next) in curr_nodes.iter().zip(next_nodes.iter()) {
-                curr_indices.push(dtmc.mgr.read_var_index(curr));
-                next_indices.push(dtmc.mgr.read_var_index(next));
-            }
-        }
-    }
-
-    (curr_indices, next_indices)
 }
 
 fn build_curr_next_identity_add01(dtmc: &mut SymbolicDTMC) -> BddNode {
@@ -149,7 +117,6 @@ pub fn compute_reachable_and_filter(dtmc: &mut SymbolicDTMC) {
     dtmc.mgr.ref_node(dtmc.transitions.0);
     let trans_rel = dtmc.mgr.add_to_bdd(dtmc.transitions);
 
-    let (curr_indices, next_indices) = curr_next_var_indices(dtmc);
     let mut iterations = 0usize;
 
     loop {
@@ -161,9 +128,9 @@ pub fn compute_reachable_and_filter(dtmc: &mut SymbolicDTMC) {
         let image_next = dtmc
             .mgr
             .bdd_and_abstract(old, trans_rel, dtmc.curr_var_cube);
-        let image_curr = dtmc
-            .mgr
-            .bdd_swap_variables(image_next, &next_indices, &curr_indices);
+        let image_curr =
+            dtmc.mgr
+                .bdd_swap_variables(image_next, &dtmc.next_var_indices, &dtmc.curr_var_indices);
         let new_reachable = dtmc.mgr.bdd_or(old, image_curr);
 
         reachable = new_reachable;

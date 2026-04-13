@@ -695,6 +695,7 @@ pub fn analyze_dtmc(
 
     for module in &mut model.modules {
         for var_decl in &mut module.local_vars {
+            let mut folded_bounds: Option<(i32, i32)> = None;
             match &mut var_decl.var_type {
                 VarType::BoundedInt { lo, hi } => {
                     fold_box_expr(lo, &constant_values);
@@ -711,6 +712,19 @@ pub fn analyze_dtmc(
                             var_decl.name
                         ),
                     )?;
+
+                    let (lo_val, hi_val) = match (lo.as_ref(), hi.as_ref()) {
+                        (Expr::IntLit(lo_val), Expr::IntLit(hi_val)) => (*lo_val, *hi_val),
+                        _ => unreachable!("bounds must be folded integer literals"),
+                    };
+                    ensure_type_ok(
+                        lo_val <= hi_val,
+                        format!(
+                            "Invalid bounds for '{}': lower bound {} exceeds upper bound {}",
+                            var_decl.name, lo_val, hi_val
+                        ),
+                    )?;
+                    folded_bounds = Some((lo_val, hi_val));
                 }
                 VarType::Bool => {}
             }
@@ -730,6 +744,20 @@ pub fn analyze_dtmc(
                     init_ty.as_str()
                 ),
             )?;
+
+            if let Some((lo, hi)) = folded_bounds {
+                let init_val = match var_decl.init.as_ref() {
+                    Expr::IntLit(v) => *v,
+                    _ => unreachable!("bounded int init must be an int literal after folding"),
+                };
+                ensure_type_ok(
+                    init_val >= lo && init_val <= hi,
+                    format!(
+                        "Initial value of '{}' out of bounds: {} not in [{}..{}]",
+                        var_decl.name, init_val, lo, hi
+                    ),
+                )?;
+            }
         }
 
         for command in &mut module.commands {

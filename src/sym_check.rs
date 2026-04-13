@@ -5,12 +5,13 @@
 //! - `P=? [phi1 U<=k phi2]`
 //!
 //! This module computes an ADD that maps each current state to its probability,
-//! then evaluates that ADD in the initial state.
+//! then evaluates that ADD in the (single) initial state.
 
 use anyhow::{bail, Result};
 use tracing::{debug, info, trace};
 
-use crate::ast::{Expr, PathFormula, Property, VarDecl, VarType};
+use crate::ast::utils::init_value;
+use crate::ast::{Expr, PathFormula, Property};
 use crate::constr_symbolic::translate_expr;
 use crate::ref_manager::{AddNode, BddNode};
 use crate::symbolic_dtmc::SymbolicDTMC;
@@ -21,24 +22,10 @@ pub enum PropertyEvaluation {
     Unsupported(&'static str),
 }
 
-fn init_value(var_decl: &VarDecl) -> i32 {
-    match (&var_decl.var_type, &*var_decl.init) {
-        (VarType::BoundedInt { .. }, Expr::IntLit(v)) => *v,
-        (VarType::Bool, Expr::BoolLit(b)) => {
-            if *b {
-                1
-            } else {
-                0
-            }
-        }
-        (VarType::Bool, Expr::IntLit(v)) if *v == 0 || *v == 1 => *v,
-        _ => panic!(
-            "Unsupported init expression for variable '{}': {:?}",
-            var_decl.name, var_decl.init
-        ),
-    }
-}
-
+/// Builds the initial-state BDD over current-state variables.
+///
+/// Analysis already guarantees folded literal inits and in-range values.
+/// The assertions below therefore check internal consistency only.
 fn build_init_bdd(dtmc: &mut SymbolicDTMC) -> BddNode {
     let mut init = dtmc.mgr.bdd_one();
 
@@ -47,14 +34,7 @@ fn build_init_bdd(dtmc: &mut SymbolicDTMC) -> BddNode {
             let var_name = var_decl.name.clone();
             let (lo, hi) = dtmc.info.var_bounds[&var_name];
             let init_val = init_value(var_decl);
-            assert!(
-                init_val >= lo && init_val <= hi,
-                "Initial value of '{}' out of bounds: {} not in [{}..{}]",
-                var_name,
-                init_val,
-                lo,
-                hi
-            );
+            assert!(init_val >= lo && init_val <= hi);
 
             let encoded = (init_val - lo) as u32;
             let curr_nodes = dtmc.var_curr_nodes[&var_name].clone();
@@ -70,65 +50,50 @@ fn build_init_bdd(dtmc: &mut SymbolicDTMC) -> BddNode {
         }
     }
 
+    debug_assert_eq!(
+        dtmc.mgr
+            .bdd_count_minterms(init, dtmc.curr_var_indices.len() as u32),
+        1
+    );
+
     init
 }
 
-fn curr_next_var_indices(dtmc: &SymbolicDTMC) -> (Vec<u16>, Vec<u16>) {
-    let mut curr_indices = Vec::new();
-    let mut next_indices = Vec::new();
-
-    for module in &dtmc.ast.modules {
-        for var_decl in &module.local_vars {
-            let var_name = &var_decl.name;
-            let curr_nodes = &dtmc.var_curr_nodes[var_name];
-            let next_nodes = &dtmc.var_next_nodes[var_name];
-            for (&curr, &next) in curr_nodes.iter().zip(next_nodes.iter()) {
-                curr_indices.push(dtmc.mgr.read_var_index(curr));
-                next_indices.push(dtmc.mgr.read_var_index(next));
-            }
-        }
-    }
-
-    (curr_indices, next_indices)
-}
-
+/// Converts a boolean state formula into a current-state BDD.
 fn state_formula_to_bdd(dtmc: &mut SymbolicDTMC, expr: &Expr) -> BddNode {
     trace!("Translating state formula to BDD: {}", expr);
     let expr_add = translate_expr(expr, dtmc);
     dtmc.mgr.add_to_bdd(expr_add)
 }
 
-fn rename_curr_to_next_add(dtmc: &mut SymbolicDTMC, add: AddNode) -> AddNode {
-    let (curr_indices, next_indices) = curr_next_var_indices(dtmc);
-    dtmc.mgr
-        .add_swap_variables(add, &curr_indices, &next_indices)
-}
-
+/// Evaluates an ADD of state values at the initial state using `Cudd_Eval`.
 fn evaluate_add_in_initial_state(dtmc: &mut SymbolicDTMC, values: AddNode) -> f64 {
     let init = build_init_bdd(dtmc);
-    let init_add = dtmc.mgr.bdd_to_add(init);
-    let masked = dtmc.mgr.add_times(values, init_add);
+    let inputs = dtmc
+        .mgr
+        .extract_leftmost_path_from_bdd(init)
+        .expect("initial-state BDD must be satisfiable");
+    dtmc.mgr.deref_node(init.0);
 
-    dtmc.mgr.ref_node(dtmc.curr_var_cube.0);
-    let curr_cube_add = dtmc.mgr.bdd_to_add(dtmc.curr_var_cube);
-    let sum = dtmc.mgr.add_sum_abstract(masked, curr_cube_add);
-    dtmc.mgr.deref_node(curr_cube_add.0);
-    let out = dtmc.mgr.add_value(sum.0).unwrap_or(0.0);
-    dtmc.mgr.deref_node(sum.0);
+    let out = dtmc.mgr.add_eval_value(values, &inputs);
+    dtmc.mgr.deref_node(values.0);
     out
 }
 
+/// Computes the probability ADD for `P=? [X phi]`.
 fn check_next_probability_add(dtmc: &mut SymbolicDTMC, phi: &Expr) -> AddNode {
-    let (_, next_indices) = curr_next_var_indices(dtmc);
     let phi_bdd = state_formula_to_bdd(dtmc, phi);
     let phi_add = dtmc.mgr.bdd_to_add(phi_bdd);
-    let phi_next = rename_curr_to_next_add(dtmc, phi_add);
+    let phi_next = dtmc
+        .mgr
+        .add_swap_vars(phi_add, &dtmc.curr_var_indices, &dtmc.next_var_indices);
 
     dtmc.mgr.ref_node(dtmc.transitions.0);
     dtmc.mgr
-        .add_matrix_multiply(dtmc.transitions, phi_next, &next_indices)
+        .add_matrix_multiply(dtmc.transitions, phi_next, &dtmc.next_var_indices)
 }
 
+/// Computes the probability ADD for `P=? [phi1 U<=k phi2]`.
 fn check_bounded_until_probability_add(
     dtmc: &mut SymbolicDTMC,
     phi1: &Expr,
@@ -136,7 +101,6 @@ fn check_bounded_until_probability_add(
     k: u32,
 ) -> AddNode {
     info!("Checking bounded until with bound k={}", k);
-    let (_, next_indices) = curr_next_var_indices(dtmc);
 
     let phi1_bdd = state_formula_to_bdd(dtmc, phi1);
     let phi2_bdd = state_formula_to_bdd(dtmc, phi2);
@@ -144,8 +108,6 @@ fn check_bounded_until_probability_add(
     dtmc.mgr.ref_node(phi2_bdd.0);
     let s_yes_add = dtmc.mgr.bdd_to_add(phi2_bdd);
 
-    // Unknown states are those that are reachable, satisfy phi1, and do not yet
-    // satisfy phi2. States outside this set contribute only through the s_yes term.
     let not_phi2 = dtmc.mgr.bdd_not(phi2_bdd);
     let phi1_and_not_phi2 = dtmc.mgr.bdd_and(phi1_bdd, not_phi2);
 
@@ -160,12 +122,14 @@ fn check_bounded_until_probability_add(
     let mut res_add = AddNode(s_yes_add.0);
     for i in 1..=k {
         trace!("Bounded-until iteration {}/{}", i, k);
-        let renamed = rename_curr_to_next_add(dtmc, res_add);
+        let renamed =
+            dtmc.mgr
+                .add_swap_vars(res_add, &dtmc.curr_var_indices, &dtmc.next_var_indices);
 
         dtmc.mgr.ref_node(t_question.0);
         let stepped = dtmc
             .mgr
-            .add_matrix_multiply(t_question, renamed, &next_indices);
+            .add_matrix_multiply(t_question, renamed, &dtmc.next_var_indices);
 
         dtmc.mgr.ref_node(s_yes_add.0);
         let s_yes_term = AddNode(s_yes_add.0);
@@ -177,6 +141,7 @@ fn check_bounded_until_probability_add(
     res_add
 }
 
+/// Evaluates one property at the single initial state.
 pub fn evaluate_property_at_initial_state(
     dtmc: &mut SymbolicDTMC,
     property: &Property,

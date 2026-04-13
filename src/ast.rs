@@ -1,3 +1,5 @@
+pub mod utils;
+
 /// Top-level DTMC AST.
 #[derive(Clone, Debug)]
 pub struct DTMCAst {

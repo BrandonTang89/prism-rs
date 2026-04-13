@@ -30,6 +30,11 @@ pub struct SymbolicDTMC {
     /// Variable name -> next-state DD bit nodes (LSB..MSB).
     pub var_next_nodes: HashMap<String, Vec<Node>>,
 
+    /// Current-state variable indices aligned with `next_var_indices`.
+    pub curr_var_indices: Vec<u16>,
+    /// Next-state variable indices aligned with `curr_var_indices`.
+    pub next_var_indices: Vec<u16>,
+
     /// DD node -> human-friendly name used in DOT output.
     pub dd_var_names: HashMap<Node, String>,
 
@@ -68,6 +73,8 @@ impl SymbolicDTMC {
             info,
             var_curr_nodes: HashMap::new(),
             var_next_nodes: HashMap::new(),
+            curr_var_indices: Vec::new(),
+            next_var_indices: Vec::new(),
             dd_var_names: HashMap::new(),
             next_var_cube,
             curr_var_cube,
