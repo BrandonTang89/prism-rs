@@ -1,21 +1,74 @@
-Let's implement the model renaming feature to allow us to easily reused
+Okay lets try to clean up the parser
 
-Look at herman3.prism, particularly at 
 
-// add further processes through renaming
-module process2 = process1 [ x1=x2, x3=x1 ] endmodule
-module process3 = process1 [ x1=x3, x3=x2 ] endmodule
+"(" <lhs:Ident> "=" <rhs:Expr> ")" => Box::new(Expr::BinOp {
+        lhs: Box::new(Expr::Ident(lhs)),
+        op: BinOp::Eq,
+        rhs,
+    }),
+    "(" <lhs:Ident> "!=" <rhs:Expr> ")" => Box::new(Expr::BinOp {
+        lhs: Box::new(Expr::Ident(lhs)),
+        op: BinOp::Neq,
+        rhs,
+    }),
+    "(" <lhs:Ident> "<" <rhs:Expr> ")" => Box::new(Expr::BinOp {
+        lhs: Box::new(Expr::Ident(lhs)),
+        op: BinOp::Lt,
+        rhs,
+    }),
+    "(" <lhs:Ident> "<=" <rhs:Expr> ")" => Box::new(Expr::BinOp {
+        lhs: Box::new(Expr::Ident(lhs)),
+        op: BinOp::Leq,
+        rhs,
+    }),
+    "(" <lhs:Ident> ">" <rhs:Expr> ")" => Box::new(Expr::BinOp {
+        lhs: Box::new(Expr::Ident(lhs)),
+        op: BinOp::Gt,
+        rhs,
+    }),
+    "(" <lhs:Ident> ">=" <rhs:Expr> ")" => Box::new(Expr::BinOp {
+        lhs: Box::new(Expr::Ident(lhs)),
+        op: BinOp::Geq,
+        rhs,
+    }),
 
-This is the syntax we want to support. We will initially fill in
-DTMCAst::renamed_modules with the renamed modules, then, within
-analyze.rs, we will expand the rename modules into actual modules
-by copying the original module and applying the renaming substitutions
-onto the local variables and update statements.
+I thought this wouldn't be necessary since it should be covered under 
+"(" <Expr> ")", and 
 
-This probably involves cloning the base module, then traversing over the
-clone and updating the relevant fields. For deal with subsituting the
-expressions, we probably want a generic function that takes some
-renaming map and applies it to an expression.
+#[precedence(level="5")] #[assoc(side="left")]
+<lhs:Expr> "<" <rhs:Expr> => Box::new(Expr::BinOp { lhs, op: BinOp::Lt, rhs }),
+<lhs:Expr> "<=" <rhs:Expr> => Box::new(Expr::BinOp { lhs, op: BinOp::Leq, rhs }),
+<lhs:Expr> ">" <rhs:Expr> => Box::new(Expr::BinOp { lhs, op: BinOp::Gt, rhs }),
+<lhs:Expr> ">=" <rhs:Expr> => Box::new(Expr::BinOp { lhs, op: BinOp::Geq, rhs }),
 
-Once this is done, ensure everything can compile and that the herman3.prism
-test in tests/parser_consts_tests.rs passes.
+#[precedence(level="6")] #[assoc(side="left")]
+<lhs:Expr> "=" <rhs:Expr> => Box::new(Expr::BinOp { lhs, op: BinOp::Eq, rhs }),
+<lhs:Expr> "!=" <rhs:Expr> => Box::new(Expr::BinOp { lhs, op: BinOp::Neq, rhs }),
+
+Can you figure out how to remove this or explain why it must be there.
+
+Secondly, the binary operands & | + - * should probably be able to take a list of them
+without needing explicit parentheses, e.g. "a & b & c" should be parsed as a single expression with 3 operands, rather than needing to be "(a & b) & c" or "a & (b & c)". This would make the syntax more natural and easier to read. This would also remove the need for the 
+
+very specific fix of
+
+    "(" <lhs:Ident> "|" <mid:Ident> "|" <rhs:Ident> ")" => Box::new(Expr::BinOp {
+        lhs: Box::new(Expr::Ident(lhs)),
+        op: BinOp::Or,
+        rhs: Box::new(Expr::BinOp {
+            lhs: Box::new(Expr::Ident(mid)),
+            op: BinOp::Or,
+            rhs: Box::new(Expr::Ident(rhs)),
+        }),
+    }),
+    "(" <lhs:Ident> "||" <mid:Ident> "||" <rhs:Ident> ")" => Box::new(Expr::BinOp {
+        lhs: Box::new(Expr::Ident(lhs)),
+        op: BinOp::Or,
+        rhs: Box::new(Expr::BinOp {
+            lhs: Box::new(Expr::Ident(mid)),
+            op: BinOp::Or,
+            rhs: Box::new(Expr::Ident(rhs)),
+        }),
+    }),
+
+Help me to make these changes and ensure that the tests still pass

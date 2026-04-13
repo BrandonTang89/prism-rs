@@ -139,99 +139,124 @@ Assignment: Box<Expr> = {
         })
 };
 
+PrimedIdentExpr: Box<Expr> = {
+    <var:Ident> "'" => Box::new(Expr::PrimedIdent(var)),
+};
+
 Ident: String = {
     r"[a-zA-Z_][a-zA-Z0-9_]*" => <>.to_string()
 };
 
 Expr: Box<Expr> = {
-    #[precedence(level="1")]
+    <cond:OrExpr> "?" <then_branch:Expr> ":" <else_branch:Expr>
+        => Box::new(Expr::Ternary { cond, then_branch, else_branch }),
+    <PrimedIdentExpr>,
+    <OrExpr>
+};
+
+OrOp: BinOp = {
+    "||" => BinOp::Or,
+    "|" => BinOp::Or,
+};
+
+AndOp: BinOp = {
+    "&&" => BinOp::And,
+    "&" => BinOp::And,
+};
+
+EqOp: BinOp = {
+    "=" => BinOp::Eq,
+    "!=" => BinOp::Neq,
+};
+
+CmpOp: BinOp = {
+    "<" => BinOp::Lt,
+    "<=" => BinOp::Leq,
+    ">" => BinOp::Gt,
+    ">=" => BinOp::Geq,
+};
+
+AddOp: BinOp = {
+    "+" => BinOp::Plus,
+    "-" => BinOp::Minus,
+};
+
+MulOp: BinOp = {
+    "*" => BinOp::Mul,
+    "/" => BinOp::Div,
+};
+
+OrExpr: Box<Expr> = {
+    <head:AndExpr> <tail:(<OrOp> <AndExpr>)*> => {
+        let mut expr = head;
+        for (op, rhs) in tail {
+            expr = Box::new(Expr::BinOp { lhs: expr, op, rhs });
+        }
+        expr
+    }
+};
+
+AndExpr: Box<Expr> = {
+    <head:EqExpr> <tail:(<AndOp> <EqExpr>)*> => {
+        let mut expr = head;
+        for (op, rhs) in tail {
+            expr = Box::new(Expr::BinOp { lhs: expr, op, rhs });
+        }
+        expr
+    }
+};
+
+EqExpr: Box<Expr> = {
+    <head:CmpExpr> <tail:(<EqOp> <CmpExpr>)*> => {
+        let mut expr = head;
+        for (op, rhs) in tail {
+            expr = Box::new(Expr::BinOp { lhs: expr, op, rhs });
+        }
+        expr
+    }
+};
+
+CmpExpr: Box<Expr> = {
+    <head:AddExpr> <tail:(<CmpOp> <AddExpr>)*> => {
+        let mut expr = head;
+        for (op, rhs) in tail {
+            expr = Box::new(Expr::BinOp { lhs: expr, op, rhs });
+        }
+        expr
+    }
+};
+
+AddExpr: Box<Expr> = {
+    <head:MulExpr> <tail:(<AddOp> <MulExpr>)*> => {
+        let mut expr = head;
+        for (op, rhs) in tail {
+            expr = Box::new(Expr::BinOp { lhs: expr, op, rhs });
+        }
+        expr
+    }
+};
+
+MulExpr: Box<Expr> = {
+    <head:UnaryExpr> <tail:(<MulOp> <UnaryExpr>)*> => {
+        let mut expr = head;
+        for (op, rhs) in tail {
+            expr = Box::new(Expr::BinOp { lhs: expr, op, rhs });
+        }
+        expr
+    }
+};
+
+UnaryExpr: Box<Expr> = {
+    "!" <e:UnaryExpr> => Box::new(Expr::UnaryOp { op: UnOp::Not, operand: e }),
+    "-" <e:UnaryExpr> => Box::new(Expr::UnaryOp { op: UnOp::Neg, operand: e }),
+    <PrimaryExpr>
+};
+
+PrimaryExpr: Box<Expr> = {
     r"[0-9]+" => Box::new(Expr::IntLit(i32::from_str(<>).unwrap())),
     r"[0-9]+\.[0-9]+" => Box::new(Expr::FloatLit(f64::from_str(<>).unwrap())),
     "false" => Box::new(Expr::BoolLit(false)),
     "true" => Box::new(Expr::BoolLit(true)),
-    "(" <lhs:Ident> "=" <rhs:Expr> ")" => Box::new(Expr::BinOp {
-        lhs: Box::new(Expr::Ident(lhs)),
-        op: BinOp::Eq,
-        rhs,
-    }),
-    "(" <lhs:Ident> "!=" <rhs:Expr> ")" => Box::new(Expr::BinOp {
-        lhs: Box::new(Expr::Ident(lhs)),
-        op: BinOp::Neq,
-        rhs,
-    }),
-    "(" <lhs:Ident> "<" <rhs:Expr> ")" => Box::new(Expr::BinOp {
-        lhs: Box::new(Expr::Ident(lhs)),
-        op: BinOp::Lt,
-        rhs,
-    }),
-    "(" <lhs:Ident> "<=" <rhs:Expr> ")" => Box::new(Expr::BinOp {
-        lhs: Box::new(Expr::Ident(lhs)),
-        op: BinOp::Leq,
-        rhs,
-    }),
-    "(" <lhs:Ident> ">" <rhs:Expr> ")" => Box::new(Expr::BinOp {
-        lhs: Box::new(Expr::Ident(lhs)),
-        op: BinOp::Gt,
-        rhs,
-    }),
-    "(" <lhs:Ident> ">=" <rhs:Expr> ")" => Box::new(Expr::BinOp {
-        lhs: Box::new(Expr::Ident(lhs)),
-        op: BinOp::Geq,
-        rhs,
-    }),
-    "(" <lhs:Ident> "|" <mid:Ident> "|" <rhs:Ident> ")" => Box::new(Expr::BinOp {
-        lhs: Box::new(Expr::Ident(lhs)),
-        op: BinOp::Or,
-        rhs: Box::new(Expr::BinOp {
-            lhs: Box::new(Expr::Ident(mid)),
-            op: BinOp::Or,
-            rhs: Box::new(Expr::Ident(rhs)),
-        }),
-    }),
-    "(" <lhs:Ident> "||" <mid:Ident> "||" <rhs:Ident> ")" => Box::new(Expr::BinOp {
-        lhs: Box::new(Expr::Ident(lhs)),
-        op: BinOp::Or,
-        rhs: Box::new(Expr::BinOp {
-            lhs: Box::new(Expr::Ident(mid)),
-            op: BinOp::Or,
-            rhs: Box::new(Expr::Ident(rhs)),
-        }),
-    }),
     <var:Ident> => Box::new(Expr::Ident(var)),
     "(" <Expr> ")",
-
-    #[precedence(level="2")] #[assoc(side="none")]
-    "!" <e:Expr> => Box::new(Expr::UnaryOp { op: UnOp::Not, operand: e }),
-    "-" <e:Expr> => Box::new(Expr::UnaryOp { op: UnOp::Neg, operand: e }),
-    <var:Ident> "'" => Box::new(Expr::PrimedIdent(var)),
-
-    #[precedence(level="3")] #[assoc(side="left")]
-    <lhs:Expr> "*" <rhs:Expr> => Box::new(Expr::BinOp { lhs, op: BinOp::Mul, rhs }),
-    <lhs:Expr> "/" <rhs:Expr> => Box::new(Expr::BinOp { lhs, op: BinOp::Div, rhs }),
-
-    #[precedence(level="4")] #[assoc(side="left")]
-    <lhs:Expr> "+" <rhs:Expr> => Box::new(Expr::BinOp { lhs, op: BinOp::Plus, rhs }),
-    <lhs:Expr> "-" <rhs:Expr> => Box::new(Expr::BinOp { lhs, op: BinOp::Minus, rhs }),
-
-    #[precedence(level="5")] #[assoc(side="left")]
-    <lhs:Expr> "<" <rhs:Expr> => Box::new(Expr::BinOp { lhs, op: BinOp::Lt, rhs }),
-    <lhs:Expr> "<=" <rhs:Expr> => Box::new(Expr::BinOp { lhs, op: BinOp::Leq, rhs }),
-    <lhs:Expr> ">" <rhs:Expr> => Box::new(Expr::BinOp { lhs, op: BinOp::Gt, rhs }),
-    <lhs:Expr> ">=" <rhs:Expr> => Box::new(Expr::BinOp { lhs, op: BinOp::Geq, rhs }),
-
-    #[precedence(level="6")] #[assoc(side="left")]
-    <lhs:Expr> "=" <rhs:Expr> => Box::new(Expr::BinOp { lhs, op: BinOp::Eq, rhs }),
-    <lhs:Expr> "!=" <rhs:Expr> => Box::new(Expr::BinOp { lhs, op: BinOp::Neq, rhs }),
-
-    #[precedence(level="7")] #[assoc(side="left")]
-    <lhs:Expr> "&&" <rhs:Expr> => Box::new(Expr::BinOp { lhs, op: BinOp::And, rhs }),
-    <lhs:Expr> "&" <rhs:Expr> => Box::new(Expr::BinOp { lhs, op: BinOp::And, rhs }),
-
-    #[precedence(level="8")] #[assoc(side="left")]
-    <lhs:Expr> "||" <rhs:Expr> => Box::new(Expr::BinOp { lhs, op: BinOp::Or, rhs }),
-    <lhs:Expr> "|" <rhs:Expr> => Box::new(Expr::BinOp { lhs, op: BinOp::Or, rhs }),
-
-    #[precedence(level="9")] #[assoc(side="right")]
-    <cond:Expr> "?" <then_branch:Expr> ":" <else_branch:Expr>
-        => Box::new(Expr::Ternary { cond, then_branch, else_branch }),
 };
