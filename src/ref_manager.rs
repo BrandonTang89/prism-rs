@@ -21,18 +21,18 @@ use std::{
 };
 
 use cudd_sys::{
-    cudd::{
-        Cudd_BddToAdd, Cudd_CheckZeroRef, Cudd_CountMinterm, Cudd_DagSize, Cudd_DebugCheck, Cudd_E,
-        Cudd_Eval, Cudd_ForeachNode, Cudd_IsComplement, Cudd_IsConstant, Cudd_NodeReadIndex,
-        Cudd_Not, Cudd_Quit, Cudd_ReadLogicZero, Cudd_ReadOne, Cudd_ReadSize, Cudd_RecursiveDeref,
-        Cudd_Ref, Cudd_Regular, Cudd_T, Cudd_V, Cudd_addApply, Cudd_addBddPattern,
-        Cudd_addBddThreshold, Cudd_addConst, Cudd_addDivide, Cudd_addExistAbstract, Cudd_addIte,
-        Cudd_addIthVar, Cudd_addMatrixMultiply, Cudd_addMinus, Cudd_addPlus, Cudd_addSwapVariables,
-        Cudd_addTimes, Cudd_bddAnd, Cudd_bddAndAbstract, Cudd_bddExistAbstract, Cudd_bddIthVar,
-        Cudd_bddNewVar, Cudd_bddOr, Cudd_bddSwapVariables, Cudd_bddXnor, Cudd_bddXor,
-        CUDD_CACHE_SLOTS, CUDD_UNIQUE_SLOTS, DD_APPLY_OPERATOR,
-    },
     DdManager, DdNode,
+    cudd::{
+        CUDD_CACHE_SLOTS, CUDD_UNIQUE_SLOTS, Cudd_BddToAdd, Cudd_CheckZeroRef, Cudd_CountMinterm,
+        Cudd_DagSize, Cudd_DebugCheck, Cudd_E, Cudd_Eval, Cudd_ForeachNode, Cudd_IsComplement,
+        Cudd_IsConstant, Cudd_NodeReadIndex, Cudd_Not, Cudd_Quit, Cudd_ReadLogicZero, Cudd_ReadOne,
+        Cudd_ReadSize, Cudd_RecursiveDeref, Cudd_Ref, Cudd_Regular, Cudd_T, Cudd_V, Cudd_addApply,
+        Cudd_addBddPattern, Cudd_addBddThreshold, Cudd_addConst, Cudd_addDivide,
+        Cudd_addExistAbstract, Cudd_addIte, Cudd_addIthVar, Cudd_addMatrixMultiply, Cudd_addMinus,
+        Cudd_addPlus, Cudd_addSwapVariables, Cudd_addTimes, Cudd_bddAnd, Cudd_bddAndAbstract,
+        Cudd_bddExistAbstract, Cudd_bddIthVar, Cudd_bddNewVar, Cudd_bddOr, Cudd_bddSwapVariables,
+        Cudd_bddXnor, Cudd_bddXor, DD_APPLY_OPERATOR,
+    },
 };
 
 const EPS: f64 = 1e-10;
@@ -215,13 +215,18 @@ impl RefManager {
         }
     }
 
-    /// Returns the THEN child of a non-terminal node, else the node itself.
+    /// Returns the THEN child of a node, preserving complement semantics.
     pub fn read_then(&self, node: Node) -> Node {
         let reg = self.regular_node(node);
         if self.is_constant(node) {
             reg
         } else {
-            Node(unsafe { Cudd_T(reg.as_ptr()) })
+            let t = Node(unsafe { Cudd_T(reg.as_ptr()) });
+            if self.is_complemented_node(node) {
+                Node(unsafe { Cudd_Not(t.as_ptr()) })
+            } else {
+                t
+            }
         }
     }
 
@@ -293,7 +298,8 @@ impl RefManager {
     /// Variables not encountered along the path remain 0, which is valid because
     /// they are don't-care for the selected path.
     ///
-    /// Returns `None` iff `root` is the zero BDD (unsatisfiable).
+    /// Returns `None` iff `root` is the zero BDD (unsatisfiable).\
+    /// __Refs__: None, __Derefs__: None
     pub fn extract_leftmost_path_from_bdd(&self, root: BddNode) -> Option<Vec<i32>> {
         let mut inputs = vec![0_i32; self.var_count()];
         let zero = self.zero_bdd().0;
@@ -312,11 +318,7 @@ impl RefManager {
                 continue;
             }
 
-            let reg = self.regular_node(node);
-            let mut then_node = Node(unsafe { Cudd_T(reg.as_ptr()) });
-            if self.is_complemented_node(node) {
-                then_node = Node(unsafe { Cudd_Not(then_node.as_ptr()) });
-            }
+            let then_node = self.read_then(node);
             inputs[var_index] = 1;
             node = then_node;
         }
@@ -992,13 +994,10 @@ impl RefManager {
         self.deref_node(next_cube_add.0);
 
         self.ref_node(denom.0);
-        let denom_pos_bdd = self.add_to_bdd(denom);
-        let denom_pos_add = self.bdd_to_add(denom_pos_bdd);
+        let denom_bdd = self.add_to_bdd(denom);
         let one = self.add_const(1.0);
-        let denom_is_zero_add = self.add_minus(one, denom_pos_add);
-        let safe_denom = self.add_plus(denom, denom_is_zero_add);
-
-        self.add_divide(m, safe_denom)
+        let denom_safe = self.add_ite(denom_bdd, denom, one);
+        self.add_divide(m, denom_safe)
     }
 }
 
@@ -1021,5 +1020,55 @@ impl Drop for RefManager {
             unsafe { Cudd_Quit(self.mgr) };
             self.mgr = ptr::null_mut();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BddNode, RefManager};
+
+    fn assert_witness_satisfies(root: BddNode, mgr: &mut RefManager, witness: &[i32]) {
+        mgr.ref_node(root.0);
+        let root_add = mgr.bdd_to_add(root);
+        let value = mgr.add_eval_value(root_add, witness);
+        assert_eq!(value, 1.0, "extracted witness must satisfy root BDD");
+        mgr.deref_node(root_add.0);
+    }
+
+    #[test]
+    fn extract_leftmost_path_handles_non_complemented_root() {
+        let mut mgr = RefManager::new();
+
+        let x0 = mgr.new_var();
+        assert!(!x0.is_complemented());
+
+        let witness = mgr
+            .extract_leftmost_path_from_bdd(x0)
+            .expect("x0 should be satisfiable");
+
+        assert_eq!(witness[0], 1, "leftmost witness for x0 must set x0=1");
+        assert_witness_satisfies(x0, &mut mgr, &witness);
+
+        mgr.deref_node(x0.0);
+        assert_eq!(mgr.nonzero_ref_count(), 0);
+    }
+
+    #[test]
+    fn extract_leftmost_path_handles_complemented_root() {
+        let mut mgr = RefManager::new();
+
+        let x0 = mgr.new_var();
+        let not_x0 = mgr.bdd_not(x0);
+        assert!(not_x0.is_complemented());
+
+        let witness = mgr
+            .extract_leftmost_path_from_bdd(not_x0)
+            .expect("!x0 should be satisfiable");
+
+        assert_eq!(witness[0], 0, "leftmost witness for !x0 must set x0=0");
+        assert_witness_satisfies(not_x0, &mut mgr, &witness);
+
+        mgr.deref_node(not_x0.0);
+        assert_eq!(mgr.nonzero_ref_count(), 0);
     }
 }

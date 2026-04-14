@@ -10,53 +10,16 @@
 use anyhow::{bail, Result};
 use tracing::{debug, info, trace};
 
-use crate::ast::utils::init_value;
 use crate::ast::{Expr, PathFormula, Property};
 use crate::constr_symbolic::translate_expr;
 use crate::ref_manager::{AddNode, BddNode};
 use crate::symbolic_dtmc::SymbolicDTMC;
+use crate::reachability::build_init_bdd;
 
 #[derive(Clone, Debug)]
 pub enum PropertyEvaluation {
     Probability(f64),
     Unsupported(&'static str),
-}
-
-/// Builds the initial-state BDD over current-state variables.
-///
-/// Analysis already guarantees folded literal inits and in-range values.
-/// The assertions below therefore check internal consistency only.
-fn build_init_bdd(dtmc: &mut SymbolicDTMC) -> BddNode {
-    let mut init = dtmc.mgr.bdd_one();
-
-    for module in &dtmc.ast.modules {
-        for var_decl in &module.local_vars {
-            let var_name = var_decl.name.clone();
-            let (lo, hi) = dtmc.info.var_bounds[&var_name];
-            let init_val = init_value(var_decl);
-            assert!(init_val >= lo && init_val <= hi);
-
-            let encoded = (init_val - lo) as u32;
-            let curr_nodes = dtmc.var_curr_nodes[&var_name].clone();
-            for (i, bit) in curr_nodes.into_iter().enumerate() {
-                dtmc.mgr.ref_node(bit);
-                let lit = if (encoded & (1u32 << i)) != 0 {
-                    BddNode(bit)
-                } else {
-                    dtmc.mgr.bdd_not(BddNode(bit))
-                };
-                init = dtmc.mgr.bdd_and(init, lit);
-            }
-        }
-    }
-
-    debug_assert_eq!(
-        dtmc.mgr
-            .bdd_count_minterms(init, dtmc.curr_var_indices.len() as u32),
-        1
-    );
-
-    init
 }
 
 /// Converts a boolean state formula into a current-state BDD.

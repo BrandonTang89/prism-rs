@@ -2,9 +2,11 @@ use crate::ast::utils::init_value;
 use crate::ref_manager::BddNode;
 use crate::symbolic_dtmc::SymbolicDTMC;
 
-fn build_init_add01(dtmc: &mut SymbolicDTMC) -> BddNode {
-    // Analysis ensures init expressions are folded literals and bounds-checked.
-    // Any violation here indicates an internal pipeline bug.
+/// Builds the initial-state BDD over current-state variables.
+///
+/// Analysis already guarantees folded literal inits and in-range values.
+/// The assertions below therefore check internal consistency only.
+pub fn build_init_bdd(dtmc: &mut SymbolicDTMC) -> BddNode {
     let mut init = dtmc.mgr.bdd_one();
 
     for module in &dtmc.ast.modules {
@@ -28,20 +30,16 @@ fn build_init_add01(dtmc: &mut SymbolicDTMC) -> BddNode {
         }
     }
 
-    dtmc.mgr.ref_node(init.0);
-    let init_add_for_count = dtmc.mgr.bdd_to_add(init);
-    dtmc.mgr.ref_node(dtmc.curr_var_cube.0);
-    let curr_cube_add = dtmc.mgr.bdd_to_add(dtmc.curr_var_cube);
-    let init_count_add = dtmc.mgr.add_sum_abstract(init_add_for_count, curr_cube_add);
-    dtmc.mgr.deref_node(curr_cube_add.0);
-    let init_count = dtmc.mgr.add_value(init_count_add.0).unwrap_or(0.0);
-    dtmc.mgr.deref_node(init_count_add.0);
-    debug_assert!((init_count - 1.0).abs() < 1e-10);
+    debug_assert_eq!(
+        dtmc.mgr
+            .bdd_count_minterms(init, dtmc.curr_var_indices.len() as u32),
+        1
+    );
 
     init
 }
 
-fn build_curr_next_identity_add01(dtmc: &mut SymbolicDTMC) -> BddNode {
+fn build_identity_transition_bdd(dtmc: &mut SymbolicDTMC) -> BddNode {
     let mut ident = dtmc.mgr.bdd_one();
     for module in &dtmc.ast.modules {
         for var_decl in &module.local_vars {
@@ -88,7 +86,7 @@ fn add_dead_end_self_loops(dtmc: &mut SymbolicDTMC, reachable: BddNode) {
     dtmc.mgr.deref_node(dead_end_count_add.0);
 
     if dead_end_count > 0 {
-        let curr_next_eq = build_curr_next_identity_add01(dtmc);
+        let curr_next_eq = build_identity_transition_bdd(dtmc);
         dtmc.mgr.ref_node(dead_end_curr.0);
         let self_loops = dtmc.mgr.bdd_and(dead_end_curr, curr_next_eq);
 
@@ -112,7 +110,7 @@ fn add_dead_end_self_loops(dtmc: &mut SymbolicDTMC, reachable: BddNode) {
 }
 
 pub fn compute_reachable_and_filter(dtmc: &mut SymbolicDTMC) {
-    let mut reachable = build_init_add01(dtmc);
+    let mut reachable = build_init_bdd(dtmc);
 
     dtmc.mgr.ref_node(dtmc.transitions.0);
     let trans_rel = dtmc.mgr.add_to_bdd(dtmc.transitions);

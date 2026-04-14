@@ -119,7 +119,7 @@ fn dtmc_brp_constr() {
 }
 
 #[test]
-fn dtmc_herman3() {
+fn dtmc_herman3_constr() {
     // regression + prism comparison test
     let const_overrides = HashMap::new();
     test_construction(
@@ -133,7 +133,7 @@ fn dtmc_herman3() {
 }
 
 #[test]
-fn dtmc_leader3_2() {
+fn dtmc_leader3_2_constr() {
     // regression + prism comparison test
     let const_overrides = HashMap::new();
     test_construction(
@@ -147,7 +147,7 @@ fn dtmc_leader3_2() {
 }
 
 #[test]
-fn dtmc_simple2() {
+fn dtmc_simple2_constr() {
     // regression + prism comparison test
     let const_overrides = HashMap::new();
     test_construction(
