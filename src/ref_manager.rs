@@ -24,18 +24,19 @@ use cudd_sys::{
     DdManager, DdNode,
     cudd::{
         CUDD_CACHE_SLOTS, CUDD_UNIQUE_SLOTS, Cudd_BddToAdd, Cudd_CheckZeroRef, Cudd_CountMinterm,
-        Cudd_DagSize, Cudd_DebugCheck, Cudd_E, Cudd_Eval, Cudd_ForeachNode, Cudd_IsComplement,
-        Cudd_IsConstant, Cudd_NodeReadIndex, Cudd_Not, Cudd_Quit, Cudd_ReadLogicZero, Cudd_ReadOne,
-        Cudd_ReadSize, Cudd_RecursiveDeref, Cudd_Ref, Cudd_Regular, Cudd_T, Cudd_V, Cudd_addApply,
-        Cudd_addBddPattern, Cudd_addBddThreshold, Cudd_addConst, Cudd_addDivide,
-        Cudd_addExistAbstract, Cudd_addIte, Cudd_addIthVar, Cudd_addMatrixMultiply, Cudd_addMinus,
-        Cudd_addPlus, Cudd_addSwapVariables, Cudd_addTimes, Cudd_bddAnd, Cudd_bddAndAbstract,
+        Cudd_DagSize, Cudd_DebugCheck, Cudd_E, Cudd_EqualSupNorm, Cudd_Eval, Cudd_ForeachNode,
+        Cudd_IsComplement, Cudd_IsConstant, Cudd_NodeReadIndex, Cudd_Not, Cudd_Quit,
+        Cudd_ReadLogicZero, Cudd_ReadOne, Cudd_ReadSize, Cudd_RecursiveDeref, Cudd_Ref,
+        Cudd_Regular, Cudd_T, Cudd_V, Cudd_addApply, Cudd_addBddPattern, Cudd_addBddThreshold,
+        Cudd_addConst, Cudd_addDivide, Cudd_addExistAbstract, Cudd_addIte, Cudd_addIthVar,
+        Cudd_addMatrixMultiply, Cudd_addMinus, Cudd_addOrAbstract, Cudd_addPlus,
+        Cudd_addSwapVariables, Cudd_addTimes, Cudd_bddAnd, Cudd_bddAndAbstract,
         Cudd_bddExistAbstract, Cudd_bddIthVar, Cudd_bddNewVar, Cudd_bddOr, Cudd_bddSwapVariables,
         Cudd_bddXnor, Cudd_bddXor, DD_APPLY_OPERATOR,
     },
 };
 
-const EPS: f64 = 1e-10;
+pub const EPS: f64 = 1e-10;
 /// Maximum number of leaked nodes reported by leak diagnostics.
 pub static LEAK_REPORT_LIMIT: usize = 10;
 const ENABLE_CUDD_DEBUGCHECK_ON_DROP: bool = true;
@@ -345,6 +346,15 @@ impl RefManager {
     /// Allocates a new BDD variable and returns it referenced.
     pub fn new_var(&mut self) -> BddNode {
         let n = self.must_node(unsafe { Cudd_bddNewVar(self.mgr) }, "Cudd_bddNewVar");
+        BddNode(self.ref_node(n))
+    }
+
+    /// Returns the BDD variable node for `var_index`, referenced.
+    pub fn bdd_var(&mut self, var_index: u16) -> BddNode {
+        let n = self.must_node(
+            unsafe { Cudd_bddIthVar(self.mgr, var_index as i32) },
+            "Cudd_bddIthVar",
+        );
         BddNode(self.ref_node(n))
     }
 
@@ -671,6 +681,22 @@ impl RefManager {
         AddNode(n)
     }
 
+    /// OR abstraction over ADD `f` with respect to `cube`.
+    ///
+    /// Assumes `f` is 0/1-valued. This corresponds to max abstraction.
+    ///
+    /// _Refs_: result\
+    /// _Derefs_: f
+    pub fn add_max_abstract(&mut self, f: AddNode, cube: AddNode) -> AddNode {
+        let n = self.must_node(
+            unsafe { Cudd_addOrAbstract(self.mgr, f.0.as_ptr(), cube.0.as_ptr()) },
+            "Cudd_addOrAbstract",
+        );
+        self.ref_node(n);
+        self.deref_node(f.0);
+        AddNode(n)
+    }
+
     /// Converts an ADD to a BDD using threshold `EPS`.
     ///
     /// _Refs_: result\
@@ -780,6 +806,16 @@ impl RefManager {
     /// _Derefs_: f
     pub fn add_sum_abstract(&mut self, f: AddNode, cube: AddNode) -> AddNode {
         self.add_exist_abstract(f, cube)
+    }
+
+    /// Returns `true` iff `|a-b|_inf <= tolerance`.
+    pub fn add_equal_sup_norm(&self, a: AddNode, b: AddNode, tolerance: f64) -> bool {
+        unsafe { Cudd_EqualSupNorm(self.mgr, a.0.as_ptr(), b.0.as_ptr(), tolerance, 0) != 0 }
+    }
+
+    /// Numerical epsilon used for ADD->BDD thresholding and convergence checks.
+    pub fn epsilon(&self) -> f64 {
+        EPS
     }
 
     /// Counts minterms in BDD `rel` over `num_vars` variables.

@@ -54,6 +54,9 @@ pub struct SymbolicDTMC {
     /// Reachable states over current-state variables as a 0-1 BDD.
     pub reachable: BddNode,
 
+    /// Cached BDD for `(curr == next)` over all state bits.
+    pub curr_next_identity: Option<BddNode>,
+
     released: bool,
 }
 
@@ -83,6 +86,7 @@ impl SymbolicDTMC {
             transitions_01_add,
             init,
             reachable,
+            curr_next_identity: None,
             released: false,
         }
     }
@@ -118,6 +122,9 @@ impl SymbolicDTMC {
         self.mgr.deref_node(self.next_var_cube.0);
         self.mgr.deref_node(self.init.0);
         self.mgr.deref_node(self.reachable.0);
+        if let Some(identity) = self.curr_next_identity {
+            self.mgr.deref_node(identity.0);
+        }
 
         for nodes in self.var_curr_nodes.values() {
             for &node in nodes {
@@ -165,6 +172,33 @@ impl SymbolicDTMC {
             stats.node_count, stats.terminal_count, stats.minterms
         ));
         desc
+    }
+
+    fn build_identity_transition_bdd(&mut self) -> BddNode {
+        let mut ident = self.mgr.bdd_one();
+        for (&curr_idx, &next_idx) in self
+            .curr_var_indices
+            .iter()
+            .zip(self.next_var_indices.iter())
+        {
+            let curr = self.mgr.bdd_var(curr_idx);
+            let next = self.mgr.bdd_var(next_idx);
+            let eq = self.mgr.bdd_equals(curr, next);
+            ident = self.mgr.bdd_and(ident, eq);
+        }
+        ident
+    }
+
+    pub fn get_curr_next_identity_bdd(&mut self) -> BddNode {
+        if let Some(identity) = self.curr_next_identity {
+            self.mgr.ref_node(identity.0);
+            return identity;
+        }
+
+        let identity = self.build_identity_transition_bdd();
+        self.mgr.ref_node(identity.0);
+        self.curr_next_identity = Some(identity);
+        identity
     }
 }
 

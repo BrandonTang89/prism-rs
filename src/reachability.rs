@@ -39,24 +39,6 @@ pub fn build_init_bdd(dtmc: &mut SymbolicDTMC) -> BddNode {
     init
 }
 
-fn build_identity_transition_bdd(dtmc: &mut SymbolicDTMC) -> BddNode {
-    let mut ident = dtmc.mgr.bdd_one();
-    for module in &dtmc.ast.modules {
-        for var_decl in &module.local_vars {
-            let var_name = &var_decl.name;
-            let curr_nodes = dtmc.var_curr_nodes[var_name].clone();
-            let next_nodes = dtmc.var_next_nodes[var_name].clone();
-            for (curr, next) in curr_nodes.into_iter().zip(next_nodes.into_iter()) {
-                dtmc.mgr.ref_node(curr);
-                dtmc.mgr.ref_node(next);
-                let eq = dtmc.mgr.bdd_equals(BddNode(curr), BddNode(next));
-                ident = dtmc.mgr.bdd_and(ident, eq);
-            }
-        }
-    }
-    ident
-}
-
 fn add_dead_end_self_loops(dtmc: &mut SymbolicDTMC, reachable: BddNode) {
     dtmc.mgr.ref_node(dtmc.transitions_01_add.0);
     let out_curr = dtmc
@@ -86,7 +68,7 @@ fn add_dead_end_self_loops(dtmc: &mut SymbolicDTMC, reachable: BddNode) {
     dtmc.mgr.deref_node(dead_end_count_add.0);
 
     if dead_end_count > 0 {
-        let curr_next_eq = build_identity_transition_bdd(dtmc);
+        let curr_next_eq = dtmc.get_curr_next_identity_bdd();
         dtmc.mgr.ref_node(dead_end_curr.0);
         let self_loops = dtmc.mgr.bdd_and(dead_end_curr, curr_next_eq);
 

@@ -3,6 +3,7 @@
 //! Currently supported:
 //! - `P=? [X phi]`
 //! - `P=? [phi1 U<=k phi2]`
+//! - `P=? [phi1 U phi2]`
 //!
 //! This module computes an ADD that maps each current state to its probability,
 //! then evaluates that ADD in the (single) initial state.
@@ -104,6 +105,111 @@ fn check_bounded_until_probability_add(
     res_add
 }
 
+/// __Refs__: result\
+/// __Derefs__: a, b, init
+fn solve_jacobi(dtmc: &mut SymbolicDTMC, a: AddNode, b: AddNode, init: AddNode) -> AddNode {
+    let identity_bdd = dtmc.get_curr_next_identity_bdd();
+    let identity_add = dtmc.mgr.bdd_to_add(identity_bdd);
+
+    dtmc.mgr.ref_node(a.0);
+    let a_diag = dtmc.mgr.add_times(a, identity_add);
+
+    let ones = dtmc.mgr.add_const(1.0);
+    let d = dtmc
+        .mgr
+        .add_matrix_multiply(a_diag, ones, &dtmc.next_var_indices);
+
+    dtmc.mgr.ref_node(a.0);
+    let neg_one = dtmc.mgr.add_const(-1.0);
+    let a_neg = dtmc.mgr.add_times(a, neg_one);
+
+    dtmc.mgr.ref_node(identity_bdd.0);
+    let not_identity_bdd = dtmc.mgr.bdd_not(identity_bdd);
+    let not_identity_add = dtmc.mgr.bdd_to_add(not_identity_bdd);
+    let a_off_diag = dtmc.mgr.add_times(a_neg, not_identity_add);
+
+    dtmc.mgr.ref_node(d.0);
+    let a_prime = dtmc.mgr.add_divide(a_off_diag, d);
+
+    dtmc.mgr.ref_node(d.0);
+    let b_prime = dtmc.mgr.add_divide(b, d);
+
+    dtmc.mgr.deref_node(d.0);
+    dtmc.mgr.deref_node(a.0);
+
+    let mut sol = init;
+    let mut iterations = 0usize;
+    loop {
+        iterations += 1;
+        dtmc.mgr.ref_node(sol.0);
+        let sol_next = dtmc
+            .mgr
+            .add_swap_vars(sol, &dtmc.curr_var_indices, &dtmc.next_var_indices);
+
+        dtmc.mgr.ref_node(a_prime.0);
+        let matmul = dtmc
+            .mgr
+            .add_matrix_multiply(a_prime, sol_next, &dtmc.next_var_indices);
+
+        dtmc.mgr.ref_node(b_prime.0);
+        let sol_prime = dtmc.mgr.add_plus(matmul, b_prime);
+
+        if dtmc
+            .mgr
+            .add_equal_sup_norm(sol, sol_prime, dtmc.mgr.epsilon())
+        {
+            dtmc.mgr.deref_node(sol.0);
+            dtmc.mgr.deref_node(a_prime.0);
+            dtmc.mgr.deref_node(b_prime.0);
+            info!("Jacobi converged in {} iterations", iterations);
+            return sol_prime;
+        }
+
+        dtmc.mgr.deref_node(sol.0);
+        sol = sol_prime;
+    }
+}
+
+fn check_unbounded_until_probability_add(
+    dtmc: &mut SymbolicDTMC,
+    phi1: &Expr,
+    phi2: &Expr,
+) -> AddNode {
+    info!("Checking unbounded until");
+
+    let phi1_bdd = state_formula_to_bdd(dtmc, phi1);
+    let phi2_bdd = state_formula_to_bdd(dtmc, phi2);
+
+    let not_phi1 = dtmc.mgr.bdd_not(phi1_bdd);
+    dtmc.mgr.ref_node(phi2_bdd.0);
+    let not_phi2 = dtmc.mgr.bdd_not(phi2_bdd);
+    let s_no = dtmc.mgr.bdd_and(not_phi1, not_phi2);
+
+    let s_yes = phi2_bdd;
+
+    dtmc.mgr.ref_node(s_yes.0);
+    let no_or_yes = dtmc.mgr.bdd_or(s_no, s_yes);
+    let not_no_or_yes = dtmc.mgr.bdd_not(no_or_yes);
+
+    dtmc.mgr.ref_node(dtmc.reachable.0);
+    let s_question = dtmc.mgr.bdd_and(dtmc.reachable, not_no_or_yes);
+
+    let s_question_add = dtmc.mgr.bdd_to_add(s_question);
+
+    dtmc.mgr.ref_node(dtmc.transitions.0);
+    let t_question = dtmc.mgr.add_times(dtmc.transitions, s_question_add);
+
+    let identity_bdd = dtmc.get_curr_next_identity_bdd();
+    let identity_add = dtmc.mgr.bdd_to_add(identity_bdd);
+
+    let a = dtmc.mgr.add_minus(identity_add, t_question);
+
+    let b = dtmc.mgr.bdd_to_add(s_yes);
+
+    dtmc.mgr.ref_node(b.0);
+    solve_jacobi(dtmc, a, b, b)
+}
+
 /// Evaluates one property at the single initial state.
 pub fn evaluate_property_at_initial_state(
     dtmc: &mut SymbolicDTMC,
@@ -135,9 +241,20 @@ pub fn evaluate_property_at_initial_state(
             );
             Ok(PropertyEvaluation::Probability(value))
         }
-        Property::ProbQuery(PathFormula::Until { bound: None, .. }) => Ok(
-            PropertyEvaluation::Unsupported("Unbounded until is not supported yet"),
-        ),
+        Property::ProbQuery(PathFormula::Until {
+            lhs,
+            rhs,
+            bound: None,
+        }) => {
+            info!("Checking unbounded-until property: {}", property);
+            let probability_add = check_unbounded_until_probability_add(dtmc, lhs, rhs);
+            let value = evaluate_add_in_initial_state(dtmc, probability_add);
+            debug!(
+                "Computed P=? [phi1 U phi2] value at initial state: {}",
+                value
+            );
+            Ok(PropertyEvaluation::Probability(value))
+        }
         Property::RewardQuery(_) => Ok(PropertyEvaluation::Unsupported(
             "Reward properties are not supported yet",
         )),

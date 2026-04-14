@@ -45,6 +45,36 @@ fn assert_zero_refs(report: RefLeakReport) {
 }
 
 #[test]
+fn dtmc_knuth_die_unbounded_until_property_probability() {
+    for x in 1..=6 {
+        let mut const_overrides = HashMap::new();
+        const_overrides.insert("x".to_string(), x.to_string());
+        let mut dtmc = construct_symbolic_dtmc_with_props(
+            "tests/dtmc/knuth_die.prism",
+            "tests/dtmc/knuth_die.prop",
+            &const_overrides,
+        )
+        .expect("Failed to construct symbolic DTMC with properties");
+
+        let property = {
+            let properties = dtmc.ast.properties.clone();
+            properties[0].clone()
+        };
+
+        match evaluate_property_at_initial_state(&mut dtmc, &property)
+            .expect("Property checking failed")
+        {
+            PropertyEvaluation::Probability(value) => assert_close(value, 1.0 / 6.0, 1e-10),
+            PropertyEvaluation::Unsupported(reason) => {
+                panic!("Expected probability, got {reason}")
+            }
+        }
+
+        assert_zero_refs(dtmc.release_report());
+    }
+}
+
+#[test]
 fn dtmc_knuth_die_next_property_probability() {
     let mut const_overrides = HashMap::new();
     const_overrides.insert("x".to_string(), "1".to_string());
