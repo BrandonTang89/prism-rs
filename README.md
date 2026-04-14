@@ -21,7 +21,7 @@ Apart from some differences in supported features (see other [docs](docs/)), the
 
 Here, we explicitly differentiate between BDDs and ADDs in the codebase with the BddNode and AddNode types. These wrap CUDD BDD and ADD nodes respectively. In the Prism codebase, only JDDNode is used, which internally wrap CUDD ADD nodes. BDDs are then just represented as 0-1 ADDs. This lack of type strictness is more prone to errors and likely less efficient since ADDs in CUDD do not implement complementary edges and therefore make negation more expensive.
 
-In PRISM, there is heavy use of inheritance, but in Rust we prefer to use composition instead. While we have not implemented other model types yet, we hope to avoid overly messy code that has many if-else branches spread throughout but would prefer mild duplication in the different model types. 
+In PRISM, there is heavy use of inheritance, but in Rust we prefer to use composition instead. While we have not implemented other model types yet, we hope to avoid overly messy code that has many if-else branches spread throughout but would prefer mild duplication in the different model types. _This looks to be challenging to achieve in practice, but we will see._
 
 ## Build and test
 We provide a Nix Development Shell environment with the relevant version of Rust included. To enter it, run:

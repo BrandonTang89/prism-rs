@@ -31,8 +31,7 @@ fn state_formula_to_bdd(dtmc: &mut SymbolicDTMC, expr: &Expr) -> BddNode {
 
 /// Evaluates an ADD of state values at the initial state using `Cudd_Eval`.
 fn evaluate_add_in_initial_state(dtmc: &mut SymbolicDTMC, values: AddNode) -> f64 {
-    dtmc.mgr.ref_node(dtmc.init.0);
-    let init = dtmc.init;
+    let init = dtmc.get_init_bdd();
     let inputs = dtmc
         .mgr
         .extract_leftmost_path_from_bdd(init)
@@ -75,8 +74,8 @@ fn check_bounded_until_probability_add(
     let not_phi2 = dtmc.mgr.bdd_not(phi2_bdd);
     let phi1_and_not_phi2 = dtmc.mgr.bdd_and(phi1_bdd, not_phi2);
 
-    dtmc.mgr.ref_node(dtmc.reachable.0);
-    let s_question = dtmc.mgr.bdd_and(dtmc.reachable, phi1_and_not_phi2);
+    let reachable = dtmc.get_reachable_bdd();
+    let s_question = dtmc.mgr.bdd_and(reachable, phi1_and_not_phi2);
     let s_question_add = dtmc.mgr.bdd_to_add(s_question);
 
     dtmc.mgr.ref_node(dtmc.transitions.0);
@@ -191,8 +190,8 @@ fn check_unbounded_until_probability_add(
     let no_or_yes = dtmc.mgr.bdd_or(s_no, s_yes);
     let not_no_or_yes = dtmc.mgr.bdd_not(no_or_yes);
 
-    dtmc.mgr.ref_node(dtmc.reachable.0);
-    let s_question = dtmc.mgr.bdd_and(dtmc.reachable, not_no_or_yes);
+    let reachable = dtmc.get_reachable_bdd();
+    let s_question = dtmc.mgr.bdd_and(reachable, not_no_or_yes);
 
     let s_question_add = dtmc.mgr.bdd_to_add(s_question);
 
