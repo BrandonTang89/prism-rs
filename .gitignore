@@ -1,7 +1,13 @@
 /target
 .direnv/
 docs/davesthesis.pdf
-tmp.dot
-tmp.svg
+*.dot
+*.svg
+
 # Added by code-review-graph
 .code-review-graph/
+.opencode.json
+.claude/
+
+# vscode settings
+.vscode/
