@@ -21,19 +21,19 @@ use std::{
 };
 
 use cudd_sys::{
-    cudd::{
-        Cudd_BddToAdd, Cudd_CheckZeroRef, Cudd_CountMinterm, Cudd_DagSize, Cudd_DebugCheck, Cudd_E,
-        Cudd_EqualSupNorm, Cudd_Eval, Cudd_ForeachNode, Cudd_IsComplement, Cudd_IsConstant,
-        Cudd_NodeReadIndex, Cudd_Not, Cudd_Quit, Cudd_ReadLogicZero, Cudd_ReadOne, Cudd_ReadSize,
-        Cudd_RecursiveDeref, Cudd_Ref, Cudd_Regular, Cudd_T, Cudd_V, Cudd_addApply,
-        Cudd_addBddPattern, Cudd_addBddThreshold, Cudd_addConst, Cudd_addDivide,
-        Cudd_addExistAbstract, Cudd_addIte, Cudd_addIthVar, Cudd_addMatrixMultiply,
-        Cudd_addMaxAbstract, Cudd_addMinAbstract, Cudd_addMinus, Cudd_addOrAbstract, Cudd_addPlus,
-        Cudd_addSwapVariables, Cudd_addTimes, Cudd_bddAnd, Cudd_bddAndAbstract,
-        Cudd_bddExistAbstract, Cudd_bddIthVar, Cudd_bddNewVar, Cudd_bddOr, Cudd_bddSwapVariables,
-        Cudd_bddXnor, Cudd_bddXor, CUDD_CACHE_SLOTS, CUDD_UNIQUE_SLOTS, DD_APPLY_OPERATOR,
-    },
     DdManager, DdNode,
+    cudd::{
+        CUDD_CACHE_SLOTS, CUDD_UNIQUE_SLOTS, Cudd_BddToAdd, Cudd_CheckZeroRef, Cudd_CountMinterm,
+        Cudd_DagSize, Cudd_DebugCheck, Cudd_E, Cudd_EqualSupNorm, Cudd_Eval, Cudd_ForeachNode,
+        Cudd_IsComplement, Cudd_IsConstant, Cudd_NodeReadIndex, Cudd_Not, Cudd_Quit,
+        Cudd_ReadLogicZero, Cudd_ReadOne, Cudd_ReadSize, Cudd_RecursiveDeref, Cudd_Ref,
+        Cudd_Regular, Cudd_T, Cudd_V, Cudd_addApply, Cudd_addBddPattern, Cudd_addBddThreshold,
+        Cudd_addConst, Cudd_addDivide, Cudd_addExistAbstract, Cudd_addIte, Cudd_addIthVar,
+        Cudd_addMatrixMultiply, Cudd_addMaxAbstract, Cudd_addMinAbstract, Cudd_addMinus,
+        Cudd_addOrAbstract, Cudd_addPlus, Cudd_addSwapVariables, Cudd_addTimes, Cudd_bddAnd,
+        Cudd_bddAndAbstract, Cudd_bddExistAbstract, Cudd_bddIthVar, Cudd_bddNewVar, Cudd_bddOr,
+        Cudd_bddSwapVariables, Cudd_bddXnor, Cudd_bddXor, DD_APPLY_OPERATOR,
+    },
 };
 
 pub const EPS: f64 = 1e-10;

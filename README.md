@@ -21,20 +21,31 @@ Apart from some differences in supported features (see other [docs](docs/)), the
 
 Here, we explicitly differentiate between BDDs and ADDs in the codebase with the BddNode and AddNode types. These wrap CUDD BDD and ADD nodes respectively. In the Prism codebase, only JDDNode is used, which internally wrap CUDD ADD nodes. BDDs are then just represented as 0-1 ADDs. This lack of type strictness is more prone to errors and likely less efficient since ADDs in CUDD do not implement complementary edges and therefore make negation more expensive.
 
-In PRISM, there is heavy use of inheritance, but in Rust we prefer to use composition instead. While we have not implemented other model types yet, we hope to avoid overly messy code that has many if-else branches spread throughout but would prefer mild duplication in the different model types. _This looks to be challenging to achieve in practice, but we will see._
+PRISM maintains its own version of CUDD within the source tree. Here, we use a patch file to make modifications to the CUDD source code, which allows us to easily pull in updates from the original CUDD repository while maintaining our changes (assuming that the files we patch do not change too much).
 
 ## Build and test
-We provide a Nix Development Shell environment with the relevant version of Rust included. To enter it, run:
+### Stable Rust
+With the stable version of rust, you can build, run and test the project in the usual way with cargo:
 
 ```bash
-nix develop
+cargo build --release
+cargo run -- [options]
+cargo test
 ```
 
-Run the full test suite:
+The CUDD library is patched after it is downloaded and then built as part of the Rust build process. 
+
+### Nix
+We also support building with Nix for easier packaging and deployment in the future.
 
 ```bash
-cargo test -- --nocapture
+nix build
+./result/bin/prism-rs [options]
 ```
+
+For Nix builds, we download the CUDD library from nixpkgs and then apply our patch to it.
+
+For development, you can use `nix develop` to get a shell with all the relevant tools installed.
 
 ## Using the binary
 
