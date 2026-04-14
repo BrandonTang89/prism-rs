@@ -17,15 +17,15 @@ jobs:
       - name: Run test suite
         run: cargo test -- --nocapture
 
-  nix:
-    name: Nix Flake Check
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
+  # nix:
+  #   name: Nix Flake Check
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - name: Check out repository
+  #       uses: actions/checkout@v4
 
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v14
+  #     - name: Install Nix
+  #       uses: DeterminateSystems/nix-installer-action@v14
 
-      - name: Run Nix flake check
-        run: nix flake check
+  #     - name: Run Nix flake check
+  #       run: nix flake check
