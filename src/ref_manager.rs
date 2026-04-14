@@ -21,19 +21,19 @@ use std::{
 };
 
 use cudd_sys::{
-    DdManager, DdNode,
     cudd::{
-        CUDD_CACHE_SLOTS, CUDD_UNIQUE_SLOTS, Cudd_BddToAdd, Cudd_CheckZeroRef, Cudd_CountMinterm,
-        Cudd_DagSize, Cudd_DebugCheck, Cudd_E, Cudd_EqualSupNorm, Cudd_Eval, Cudd_ForeachNode,
-        Cudd_IsComplement, Cudd_IsConstant, Cudd_NodeReadIndex, Cudd_Not, Cudd_Quit,
-        Cudd_ReadLogicZero, Cudd_ReadOne, Cudd_ReadSize, Cudd_RecursiveDeref, Cudd_Ref,
-        Cudd_Regular, Cudd_T, Cudd_V, Cudd_addApply, Cudd_addBddPattern, Cudd_addBddThreshold,
-        Cudd_addConst, Cudd_addDivide, Cudd_addExistAbstract, Cudd_addIte, Cudd_addIthVar,
-        Cudd_addMatrixMultiply, Cudd_addMaxAbstract, Cudd_addMinus, Cudd_addOrAbstract,
-        Cudd_addPlus, Cudd_addSwapVariables, Cudd_addTimes, Cudd_bddAnd, Cudd_bddAndAbstract,
+        Cudd_BddToAdd, Cudd_CheckZeroRef, Cudd_CountMinterm, Cudd_DagSize, Cudd_DebugCheck, Cudd_E,
+        Cudd_EqualSupNorm, Cudd_Eval, Cudd_ForeachNode, Cudd_IsComplement, Cudd_IsConstant,
+        Cudd_NodeReadIndex, Cudd_Not, Cudd_Quit, Cudd_ReadLogicZero, Cudd_ReadOne, Cudd_ReadSize,
+        Cudd_RecursiveDeref, Cudd_Ref, Cudd_Regular, Cudd_T, Cudd_V, Cudd_addApply,
+        Cudd_addBddPattern, Cudd_addBddThreshold, Cudd_addConst, Cudd_addDivide,
+        Cudd_addExistAbstract, Cudd_addIte, Cudd_addIthVar, Cudd_addMatrixMultiply,
+        Cudd_addMaxAbstract, Cudd_addMinAbstract, Cudd_addMinus, Cudd_addOrAbstract, Cudd_addPlus,
+        Cudd_addSwapVariables, Cudd_addTimes, Cudd_bddAnd, Cudd_bddAndAbstract,
         Cudd_bddExistAbstract, Cudd_bddIthVar, Cudd_bddNewVar, Cudd_bddOr, Cudd_bddSwapVariables,
-        Cudd_bddXnor, Cudd_bddXor, DD_APPLY_OPERATOR,
+        Cudd_bddXnor, Cudd_bddXor, CUDD_CACHE_SLOTS, CUDD_UNIQUE_SLOTS, DD_APPLY_OPERATOR,
     },
+    DdManager, DdNode,
 };
 
 pub const EPS: f64 = 1e-10;
@@ -711,6 +711,20 @@ impl RefManager {
         AddNode(n)
     }
 
+    /// Min abstraction over ADD `f` with respect to `cube`.
+    ///
+    /// _Refs_: result\
+    /// _Derefs_: f
+    pub fn add_min_abstract(&mut self, f: AddNode, cube: AddNode) -> AddNode {
+        let n = self.must_node(
+            unsafe { Cudd_addMinAbstract(self.mgr, f.0.as_ptr(), cube.0.as_ptr()) },
+            "Cudd_addMinAbstract",
+        );
+        self.ref_node(n);
+        self.deref_node(f.0);
+        AddNode(n)
+    }
+
     /// Converts an ADD to a BDD using threshold `EPS`.
     ///
     /// _Refs_: result\
@@ -1135,6 +1149,31 @@ mod tests {
         );
 
         mgr.deref_node(max_abs.0);
+        mgr.deref_node(cube.0);
+        assert_eq!(mgr.nonzero_ref_count(), 0);
+    }
+
+    #[test]
+    fn add_min_abstract_takes_min_over_abstracted_var() {
+        let mut mgr = RefManager::new();
+
+        let cond = mgr.bdd_var(0);
+        let then_branch = mgr.add_const(0.2);
+        let else_branch = mgr.add_const(0.7);
+        let f = mgr.add_ite(cond, then_branch, else_branch);
+
+        let cube = mgr.add_var(0);
+        let min_abs = mgr.add_min_abstract(f, cube);
+
+        let value = mgr
+            .add_value(min_abs.0)
+            .expect("min abstraction over x0 should yield a constant");
+        assert!(
+            (value - 0.2).abs() < 1e-12,
+            "expected min value 0.2, got {value}"
+        );
+
+        mgr.deref_node(min_abs.0);
         mgr.deref_node(cube.0);
         assert_eq!(mgr.nonzero_ref_count(), 0);
     }

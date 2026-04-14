@@ -1,16 +1,288 @@
 extern crate autotools;
 
-use SHA256Status::{Mismatch, Unknown};
 use autotools::Config;
 use std::env;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use SHA256Status::{Mismatch, Unknown};
 
 const PACKAGE_URL: &str =
     "https://github.com/cuddorg/cudd/releases/download/3.0.0/cudd-3.0.0.tar.gz";
 const PACKAGE_SHA256: &str = "5fe145041c594689e6e7cf4cd623d5f2b7c36261708be8c9a72aed72cf67acce";
+
+const CUDD_H_DECL_ANCHOR: &str =
+    "extern DdNode * Cudd_addOrAbstract(DdManager *manager, DdNode *f, DdNode *cube);\n";
+const CUDD_H_DECL_INSERT: &str =
+    "extern DdNode * Cudd_addOrAbstract(DdManager *manager, DdNode *f, DdNode *cube);\n\
+extern DdNode * Cudd_addMaxAbstract(DdManager *manager, DdNode *f, DdNode *cube);\n\
+extern DdNode * Cudd_addMinAbstract(DdManager *manager, DdNode *f, DdNode *cube);\n";
+
+const CUDD_INT_H_DECL_ANCHOR: &str =
+    "extern DdNode * cuddAddOrAbstractRecur(DdManager *manager, DdNode *f, DdNode *cube);\n";
+const CUDD_INT_H_DECL_INSERT: &str =
+    "extern DdNode * cuddAddOrAbstractRecur(DdManager *manager, DdNode *f, DdNode *cube);\n\
+extern DdNode * cuddAddMaxAbstractRecur(DdManager *manager, DdNode *f, DdNode *cube);\n\
+extern DdNode * cuddAddMinAbstractRecur(DdManager *manager, DdNode *f, DdNode *cube);\n";
+
+const CUDD_ADD_ABS_EXPORT_INSERT_ANCHOR: &str = "} /* end of Cudd_addOrAbstract */\n\n\n/*---------------------------------------------------------------------------*/\n/* Definition of internal functions                                          */\n/*---------------------------------------------------------------------------*/\n";
+
+const CUDD_ADD_ABS_RECUR_INSERT_ANCHOR: &str = "} /* end of cuddAddOrAbstractRecur */\n\n\n\n/*---------------------------------------------------------------------------*/\n/* Definition of static functions                                            */\n/*---------------------------------------------------------------------------*/\n";
+
+const MAX_EXPORTED_FUNCTION: &str = r#"/**
+  @brief Maximization-abstracts all the variables in cube from %ADD f.
+
+  @details Abstracts all the variables in cube from f by taking the
+  maximum over all values taken by the abstracted variables.
+
+  @return the abstracted %ADD if successful; NULL otherwise.
+
+  @sideeffect None
+
+  @see Cudd_addExistAbstract Cudd_addUnivAbstract Cudd_addOrAbstract
+
+*/
+DdNode *
+Cudd_addMaxAbstract(
+  DdManager * manager,
+  DdNode * f,
+  DdNode * cube)
+{
+    DdNode *res;
+
+    if (addCheckPositiveCube(manager, cube) == 0) {
+        (void) fprintf(manager->err,"Error: Can only abstract cubes");
+        return(NULL);
+    }
+
+    do {
+        manager->reordered = 0;
+        res = cuddAddMaxAbstractRecur(manager, f, cube);
+    } while (manager->reordered == 1);
+    if (manager->errorCode == CUDD_TIMEOUT_EXPIRED && manager->timeoutHandler) {
+        manager->timeoutHandler(manager, manager->tohArg);
+    }
+
+    return(res);
+
+} /* end of Cudd_addMaxAbstract */
+"#;
+
+const MIN_EXPORTED_FUNCTION: &str = r#"/**
+  @brief Minimization-abstracts all the variables in cube from %ADD f.
+
+  @details Abstracts all the variables in cube from f by taking the
+  minimum over all values taken by the abstracted variables.
+
+  @return the abstracted %ADD if successful; NULL otherwise.
+
+  @sideeffect None
+
+  @see Cudd_addExistAbstract Cudd_addUnivAbstract Cudd_addOrAbstract
+
+*/
+DdNode *
+Cudd_addMinAbstract(
+  DdManager * manager,
+  DdNode * f,
+  DdNode * cube)
+{
+    DdNode *res;
+
+    if (addCheckPositiveCube(manager, cube) == 0) {
+        (void) fprintf(manager->err,"Error: Can only abstract cubes");
+        return(NULL);
+    }
+
+    do {
+        manager->reordered = 0;
+        res = cuddAddMinAbstractRecur(manager, f, cube);
+    } while (manager->reordered == 1);
+    if (manager->errorCode == CUDD_TIMEOUT_EXPIRED && manager->timeoutHandler) {
+        manager->timeoutHandler(manager, manager->tohArg);
+    }
+
+    return(res);
+
+} /* end of Cudd_addMinAbstract */
+"#;
+
+const MAX_RECURSIVE_FUNCTION: &str = r#"/**
+  @brief Performs the recursive step of Cudd_addMaxAbstract.
+
+  @return the %ADD obtained by abstracting the variables of cube from
+  f with maximization, if successful; NULL otherwise.
+
+  @sideeffect None
+
+*/
+DdNode *
+cuddAddMaxAbstractRecur(
+  DdManager * manager,
+  DdNode * f,
+  DdNode * cube)
+{
+    DdNode *T, *E, *res, *res1, *res2, *one;
+
+    statLine(manager);
+    one = DD_ONE(manager);
+
+    /* Cube is guaranteed to be a cube at this point. */
+    if (cuddIsConstant(f) || cube == one) {
+        return(f);
+    }
+
+    /* Abstract a variable that does not appear in f. */
+    if (cuddI(manager,f->index) > cuddI(manager,cube->index)) {
+        return(cuddAddMaxAbstractRecur(manager, f, cuddT(cube)));
+    }
+
+    if ((res = cuddCacheLookup2(manager, Cudd_addMaxAbstract, f, cube)) != NULL) {
+        return(res);
+    }
+
+    checkWhetherToGiveUp(manager);
+
+    T = cuddT(f);
+    E = cuddE(f);
+
+    /* If the two indices are the same, so are their levels. */
+    if (f->index == cube->index) {
+        res1 = cuddAddMaxAbstractRecur(manager, T, cuddT(cube));
+        if (res1 == NULL) return(NULL);
+        cuddRef(res1);
+        res2 = cuddAddMaxAbstractRecur(manager, E, cuddT(cube));
+        if (res2 == NULL) {
+            Cudd_RecursiveDeref(manager,res1);
+            return(NULL);
+        }
+        cuddRef(res2);
+        res = cuddAddApplyRecur(manager, Cudd_addMaximum, res1, res2);
+        if (res == NULL) {
+            Cudd_RecursiveDeref(manager,res1);
+            Cudd_RecursiveDeref(manager,res2);
+            return(NULL);
+        }
+        cuddRef(res);
+        Cudd_RecursiveDeref(manager,res1);
+        Cudd_RecursiveDeref(manager,res2);
+        cuddCacheInsert2(manager, Cudd_addMaxAbstract, f, cube, res);
+        cuddDeref(res);
+        return(res);
+    } else { /* if (cuddI(manager,f->index) < cuddI(manager,cube->index)) */
+        res1 = cuddAddMaxAbstractRecur(manager, T, cube);
+        if (res1 == NULL) return(NULL);
+        cuddRef(res1);
+        res2 = cuddAddMaxAbstractRecur(manager, E, cube);
+        if (res2 == NULL) {
+            Cudd_RecursiveDeref(manager,res1);
+            return(NULL);
+        }
+        cuddRef(res2);
+        res = (res1 == res2) ? res1 :
+            cuddUniqueInter(manager, (int) f->index, res1, res2);
+        if (res == NULL) {
+            Cudd_RecursiveDeref(manager,res1);
+            Cudd_RecursiveDeref(manager,res2);
+            return(NULL);
+        }
+        cuddDeref(res1);
+        cuddDeref(res2);
+        cuddCacheInsert2(manager, Cudd_addMaxAbstract, f, cube, res);
+        return(res);
+    }
+
+} /* end of cuddAddMaxAbstractRecur */
+"#;
+
+const MIN_RECURSIVE_FUNCTION: &str = r#"/**
+  @brief Performs the recursive step of Cudd_addMinAbstract.
+
+  @return the %ADD obtained by abstracting the variables of cube from
+  f with minimization, if successful; NULL otherwise.
+
+  @sideeffect None
+
+*/
+DdNode *
+cuddAddMinAbstractRecur(
+  DdManager * manager,
+  DdNode * f,
+  DdNode * cube)
+{
+    DdNode *T, *E, *res, *res1, *res2, *one;
+
+    statLine(manager);
+    one = DD_ONE(manager);
+
+    /* Cube is guaranteed to be a cube at this point. */
+    if (cuddIsConstant(f) || cube == one) {
+        return(f);
+    }
+
+    /* Abstract a variable that does not appear in f. */
+    if (cuddI(manager,f->index) > cuddI(manager,cube->index)) {
+        return(cuddAddMinAbstractRecur(manager, f, cuddT(cube)));
+    }
+
+    if ((res = cuddCacheLookup2(manager, Cudd_addMinAbstract, f, cube)) != NULL) {
+        return(res);
+    }
+
+    checkWhetherToGiveUp(manager);
+
+    T = cuddT(f);
+    E = cuddE(f);
+
+    /* If the two indices are the same, so are their levels. */
+    if (f->index == cube->index) {
+        res1 = cuddAddMinAbstractRecur(manager, T, cuddT(cube));
+        if (res1 == NULL) return(NULL);
+        cuddRef(res1);
+        res2 = cuddAddMinAbstractRecur(manager, E, cuddT(cube));
+        if (res2 == NULL) {
+            Cudd_RecursiveDeref(manager,res1);
+            return(NULL);
+        }
+        cuddRef(res2);
+        res = cuddAddApplyRecur(manager, Cudd_addMinimum, res1, res2);
+        if (res == NULL) {
+            Cudd_RecursiveDeref(manager,res1);
+            Cudd_RecursiveDeref(manager,res2);
+            return(NULL);
+        }
+        cuddRef(res);
+        Cudd_RecursiveDeref(manager,res1);
+        Cudd_RecursiveDeref(manager,res2);
+        cuddCacheInsert2(manager, Cudd_addMinAbstract, f, cube, res);
+        cuddDeref(res);
+        return(res);
+    } else { /* if (cuddI(manager,f->index) < cuddI(manager,cube->index)) */
+        res1 = cuddAddMinAbstractRecur(manager, T, cube);
+        if (res1 == NULL) return(NULL);
+        cuddRef(res1);
+        res2 = cuddAddMinAbstractRecur(manager, E, cube);
+        if (res2 == NULL) {
+            Cudd_RecursiveDeref(manager,res1);
+            return(NULL);
+        }
+        cuddRef(res2);
+        res = (res1 == res2) ? res1 :
+            cuddUniqueInter(manager, (int) f->index, res1, res2);
+        if (res == NULL) {
+            Cudd_RecursiveDeref(manager,res1);
+            Cudd_RecursiveDeref(manager,res2);
+            return(NULL);
+        }
+        cuddDeref(res1);
+        cuddDeref(res2);
+        cuddCacheInsert2(manager, Cudd_addMinAbstract, f, cube, res);
+        return(res);
+    }
+
+} /* end of cuddAddMinAbstractRecur */
+"#;
 
 #[derive(Debug)]
 #[allow(dead_code)]
@@ -32,7 +304,6 @@ impl From<std::io::Error> for FetchError {
     }
 }
 
-/// Run a command and return (stdout, stderr) if exit status is success.
 fn run_command(cmd: &mut Command) -> Result<(String, String), FetchError> {
     let output = cmd.output()?;
 
@@ -54,74 +325,125 @@ fn replace_once(contents: &str, from: &str, to: &str, context: &str) -> Result<S
     Ok(contents.replacen(from, to, 1))
 }
 
-fn patch_cudd_sources(cudd_path: &Path) -> Result<(), String> {
-    let cudd_h_path = cudd_path.join("cudd/cudd.h");
-    let cudd_int_h_path = cudd_path.join("cudd/cuddInt.h");
-    let cudd_add_abs_path = cudd_path.join("cudd/cuddAddAbs.c");
-
-    let mut cudd_h = fs::read_to_string(&cudd_h_path)
-        .map_err(|e| format!("Cannot read {}: {e}", cudd_h_path.display()))?;
-    if !cudd_h.contains("Cudd_addMaxAbstract") {
-        cudd_h = replace_once(
-            &cudd_h,
-            "extern DdNode * Cudd_addOrAbstract(DdManager *manager, DdNode *f, DdNode *cube);\n",
-            "extern DdNode * Cudd_addOrAbstract(DdManager *manager, DdNode *f, DdNode *cube);\nextern DdNode * Cudd_addMaxAbstract(DdManager *manager, DdNode *f, DdNode *cube);\n",
-            "Cudd_addMaxAbstract declaration in cudd.h",
-        )?;
-        fs::write(&cudd_h_path, cudd_h)
-            .map_err(|e| format!("Cannot write {}: {e}", cudd_h_path.display()))?;
+fn ensure_contains_or_insert_once(
+    contents: String,
+    present_marker: &str,
+    anchor: &str,
+    insert_text: &str,
+    context: &str,
+) -> Result<String, String> {
+    if contents.contains(present_marker) {
+        return Ok(contents);
     }
+    replace_once(&contents, anchor, insert_text, context)
+}
 
-    let mut cudd_int_h = fs::read_to_string(&cudd_int_h_path)
-        .map_err(|e| format!("Cannot read {}: {e}", cudd_int_h_path.display()))?;
-    if !cudd_int_h.contains("cuddAddMaxAbstractRecur") {
-        cudd_int_h = replace_once(
-            &cudd_int_h,
-            "extern DdNode * cuddAddOrAbstractRecur(DdManager *manager, DdNode *f, DdNode *cube);\n",
-            "extern DdNode * cuddAddOrAbstractRecur(DdManager *manager, DdNode *f, DdNode *cube);\nextern DdNode * cuddAddMaxAbstractRecur(DdManager *manager, DdNode *f, DdNode *cube);\n",
-            "cuddAddMaxAbstractRecur declaration in cuddInt.h",
-        )?;
-        fs::write(&cudd_int_h_path, cudd_int_h)
-            .map_err(|e| format!("Cannot write {}: {e}", cudd_int_h_path.display()))?;
+fn patch_file(
+    path: &Path,
+    patcher: impl FnOnce(String) -> Result<String, String>,
+) -> Result<(), String> {
+    let original =
+        fs::read_to_string(path).map_err(|e| format!("Cannot read {}: {e}", path.display()))?;
+    let patched = patcher(original)?;
+    if patched
+        != fs::read_to_string(path)
+            .map_err(|e| format!("Cannot re-read {}: {e}", path.display()))?
+    {
+        fs::write(path, patched).map_err(|e| format!("Cannot write {}: {e}", path.display()))?;
     }
-
-    let mut cudd_add_abs = fs::read_to_string(&cudd_add_abs_path)
-        .map_err(|e| format!("Cannot read {}: {e}", cudd_add_abs_path.display()))?;
-    if !cudd_add_abs.contains("Cudd_addMaxAbstract(") {
-        cudd_add_abs = replace_once(
-            &cudd_add_abs,
-            "} /* end of Cudd_addOrAbstract */\n\n\n/*---------------------------------------------------------------------------*/\n/* Definition of internal functions                                          */\n/*---------------------------------------------------------------------------*/\n",
-            "} /* end of Cudd_addOrAbstract */\n\n\n/**\n  @brief Maximization-abstracts all the variables in cube from %ADD f.\n\n  @details Abstracts all the variables in cube from f by taking the\n  maximum over all values taken by the abstracted variables.\n\n  @return the abstracted %ADD if successful; NULL otherwise.\n\n  @sideeffect None\n\n  @see Cudd_addExistAbstract Cudd_addUnivAbstract Cudd_addOrAbstract\n\n*/\nDdNode *\nCudd_addMaxAbstract(\n  DdManager * manager,\n  DdNode * f,\n  DdNode * cube)\n{\n    DdNode *res;\n\n    if (addCheckPositiveCube(manager, cube) == 0) {\n        (void) fprintf(manager->err,\"Error: Can only abstract cubes\");\n        return(NULL);\n    }\n\n    do {\n        manager->reordered = 0;\n        res = cuddAddMaxAbstractRecur(manager, f, cube);\n    } while (manager->reordered == 1);\n    if (manager->errorCode == CUDD_TIMEOUT_EXPIRED && manager->timeoutHandler) {\n        manager->timeoutHandler(manager, manager->tohArg);\n    }\n\n    return(res);\n\n} /* end of Cudd_addMaxAbstract */\n\n\n/*---------------------------------------------------------------------------*/\n/* Definition of internal functions                                          */\n/*---------------------------------------------------------------------------*/\n",
-            "Cudd_addMaxAbstract exported function in cuddAddAbs.c",
-        )?;
-
-        cudd_add_abs = replace_once(
-            &cudd_add_abs,
-            "} /* end of cuddAddOrAbstractRecur */\n\n\n\n/*---------------------------------------------------------------------------*/\n/* Definition of static functions                                            */\n/*---------------------------------------------------------------------------*/\n",
-            "} /* end of cuddAddOrAbstractRecur */\n\n\n/**\n  @brief Performs the recursive step of Cudd_addMaxAbstract.\n\n  @return the %ADD obtained by abstracting the variables of cube from\n  f with maximization, if successful; NULL otherwise.\n\n  @sideeffect None\n\n*/\nDdNode *\ncuddAddMaxAbstractRecur(\n  DdManager * manager,\n  DdNode * f,\n  DdNode * cube)\n{\n    DdNode *T, *E, *res, *res1, *res2, *one;\n\n    statLine(manager);\n    one = DD_ONE(manager);\n\n    /* Cube is guaranteed to be a cube at this point. */\n    if (cuddIsConstant(f) || cube == one) {\n        return(f);\n    }\n\n    /* Abstract a variable that does not appear in f. */\n    if (cuddI(manager,f->index) > cuddI(manager,cube->index)) {\n        return(cuddAddMaxAbstractRecur(manager, f, cuddT(cube)));\n    }\n\n    if ((res = cuddCacheLookup2(manager, Cudd_addMaxAbstract, f, cube)) != NULL) {\n        return(res);\n    }\n\n    checkWhetherToGiveUp(manager);\n\n    T = cuddT(f);\n    E = cuddE(f);\n\n    /* If the two indices are the same, so are their levels. */\n    if (f->index == cube->index) {\n        res1 = cuddAddMaxAbstractRecur(manager, T, cuddT(cube));\n        if (res1 == NULL) return(NULL);\n        cuddRef(res1);\n        res2 = cuddAddMaxAbstractRecur(manager, E, cuddT(cube));\n        if (res2 == NULL) {\n            Cudd_RecursiveDeref(manager,res1);\n            return(NULL);\n        }\n        cuddRef(res2);\n        res = cuddAddApplyRecur(manager, Cudd_addMaximum, res1, res2);\n        if (res == NULL) {\n            Cudd_RecursiveDeref(manager,res1);\n            Cudd_RecursiveDeref(manager,res2);\n            return(NULL);\n        }\n        cuddRef(res);\n        Cudd_RecursiveDeref(manager,res1);\n        Cudd_RecursiveDeref(manager,res2);\n        cuddCacheInsert2(manager, Cudd_addMaxAbstract, f, cube, res);\n        cuddDeref(res);\n        return(res);\n    } else { /* if (cuddI(manager,f->index) < cuddI(manager,cube->index)) */\n        res1 = cuddAddMaxAbstractRecur(manager, T, cube);\n        if (res1 == NULL) return(NULL);\n        cuddRef(res1);\n        res2 = cuddAddMaxAbstractRecur(manager, E, cube);\n        if (res2 == NULL) {\n            Cudd_RecursiveDeref(manager,res1);\n            return(NULL);\n        }\n        cuddRef(res2);\n        res = (res1 == res2) ? res1 :\n            cuddUniqueInter(manager, (int) f->index, res1, res2);\n        if (res == NULL) {\n            Cudd_RecursiveDeref(manager,res1);\n            Cudd_RecursiveDeref(manager,res2);\n            return(NULL);\n        }\n        cuddDeref(res1);\n        cuddDeref(res2);\n        cuddCacheInsert2(manager, Cudd_addMaxAbstract, f, cube, res);\n        return(res);\n    }\n\n} /* end of cuddAddMaxAbstractRecur */\n\n\n/*---------------------------------------------------------------------------*/\n/* Definition of static functions                                            */\n/*---------------------------------------------------------------------------*/\n",
-            "cuddAddMaxAbstractRecur implementation in cuddAddAbs.c",
-        )?;
-
-        fs::write(&cudd_add_abs_path, cudd_add_abs)
-            .map_err(|e| format!("Cannot write {}: {e}", cudd_add_abs_path.display()))?;
-    }
-
     Ok(())
 }
 
-/// Fetch a file from a URL if it does not already exist in out_dir and verify its sha256sum if possible.
+fn patch_cudd_headers(cudd_path: &Path) -> Result<(), String> {
+    let cudd_h_path = cudd_path.join("cudd/cudd.h");
+    let cudd_int_h_path = cudd_path.join("cudd/cuddInt.h");
+
+    patch_file(&cudd_h_path, |contents| {
+        ensure_contains_or_insert_once(
+            contents,
+            "Cudd_addMinAbstract",
+            CUDD_H_DECL_ANCHOR,
+            CUDD_H_DECL_INSERT,
+            "Cudd_add{Max,Min}Abstract declarations in cudd.h",
+        )
+    })?;
+
+    patch_file(&cudd_int_h_path, |contents| {
+        ensure_contains_or_insert_once(
+            contents,
+            "cuddAddMinAbstractRecur",
+            CUDD_INT_H_DECL_ANCHOR,
+            CUDD_INT_H_DECL_INSERT,
+            "cuddAdd{Max,Min}AbstractRecur declarations in cuddInt.h",
+        )
+    })
+}
+
+fn patch_cudd_add_abs(cudd_path: &Path) -> Result<(), String> {
+    let cudd_add_abs_path = cudd_path.join("cudd/cuddAddAbs.c");
+    patch_file(&cudd_add_abs_path, |mut contents| {
+        if !contents.contains("Cudd_addMaxAbstract(") {
+            let insert = format!(
+                "}} /* end of Cudd_addOrAbstract */\n\n\n{}\n{}\n\n/*---------------------------------------------------------------------------*/\n/* Definition of internal functions                                          */\n/*---------------------------------------------------------------------------*/\n",
+                MAX_EXPORTED_FUNCTION, MIN_EXPORTED_FUNCTION
+            );
+            contents = replace_once(
+                &contents,
+                CUDD_ADD_ABS_EXPORT_INSERT_ANCHOR,
+                &insert,
+                "add max/min exported functions in cuddAddAbs.c",
+            )?;
+        } else if !contents.contains("Cudd_addMinAbstract(") {
+            let with_min = format!("{}\n{}", MAX_EXPORTED_FUNCTION, MIN_EXPORTED_FUNCTION);
+            contents = replace_once(
+                &contents,
+                MAX_EXPORTED_FUNCTION,
+                &with_min,
+                "add min exported function next to max",
+            )?;
+        }
+
+        if !contents.contains("DdNode *\ncuddAddMaxAbstractRecur(") {
+            let insert = format!(
+                "}} /* end of cuddAddOrAbstractRecur */\n\n\n{}\n{}\n\n/*---------------------------------------------------------------------------*/\n/* Definition of static functions                                            */\n/*---------------------------------------------------------------------------*/\n",
+                MAX_RECURSIVE_FUNCTION, MIN_RECURSIVE_FUNCTION
+            );
+            contents = replace_once(
+                &contents,
+                CUDD_ADD_ABS_RECUR_INSERT_ANCHOR,
+                &insert,
+                "add max/min recursive functions in cuddAddAbs.c",
+            )?;
+        } else if !contents.contains("DdNode *\ncuddAddMinAbstractRecur(") {
+            let with_min = format!("{}\n{}", MAX_RECURSIVE_FUNCTION, MIN_RECURSIVE_FUNCTION);
+            contents = replace_once(
+                &contents,
+                MAX_RECURSIVE_FUNCTION,
+                &with_min,
+                "add min recursive function next to max",
+            )?;
+        }
+
+        Ok(contents)
+    })
+}
+
+fn patch_cudd_sources(cudd_path: &Path) -> Result<(), String> {
+    patch_cudd_headers(cudd_path)?;
+    patch_cudd_add_abs(cudd_path)
+}
+
 fn fetch_package(
     out_dir: &str,
     url: &str,
     sha256: &str,
 ) -> Result<(PathBuf, SHA256Status), FetchError> {
-    let out_path = Path::new(&out_dir);
+    let out_path = Path::new(out_dir);
     let target_path = out_path.join(Path::new(url).file_name().unwrap());
     let target_path_str = target_path.clone().into_os_string().into_string().unwrap();
 
     match target_path.metadata() {
         Err(error) if error.kind() == ErrorKind::NotFound => {
-            // Path does not exist! Start download...
             println!("Downloading {} to {}", url, target_path_str);
             let mut command = Command::new("curl");
             command.args(["-L", url, "-o", target_path_str.as_str()]);
@@ -134,7 +456,6 @@ fn fetch_package(
         Err(error) => return Err(FetchError::from(error)),
     }
 
-    // Now run sha256 sum check:
     let mut command_1 = Command::new("sha256sum");
     command_1.arg(target_path.clone());
     let mut command_2 = Command::new("shasum -a 256");
@@ -153,7 +474,6 @@ fn fetch_package(
 fn main() -> Result<(), String> {
     let build_cudd = env::var_os("CARGO_FEATURE_BUILD_CUDD").is_some();
     if !build_cudd {
-        // If silent build is active, don't do anything.
         return Ok(());
     }
 
@@ -170,17 +490,14 @@ fn main() -> Result<(), String> {
         _ => (),
     }
 
-    // Get cudd.tar.gz path without extensions.
     let cudd_path = tar_path.with_extension("").with_extension("");
     let cudd_path_str = cudd_path.clone().into_os_string().into_string().unwrap();
 
     if !cudd_path.exists() {
-        // Create the destination directory.
-        std::fs::create_dir_all(cudd_path.clone())
+        fs::create_dir_all(cudd_path.clone())
             .map_err(|e| format!("Cannot create CUDD directory: {:?}", e))?;
     }
 
-    // un-tar package, ignoring the name of the top level folder, dumping into cudd_path instead.
     let mut tar_command = Command::new("tar");
     tar_command.args([
         "xf",
@@ -193,7 +510,6 @@ fn main() -> Result<(), String> {
 
     patch_cudd_sources(cudd_path.as_path())?;
 
-    // Enable dddmp when building.
     let build_output = Config::new(cudd_path).enable("dddmp", None).build();
 
     println!(

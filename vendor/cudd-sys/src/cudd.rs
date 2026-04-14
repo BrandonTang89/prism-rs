@@ -552,6 +552,11 @@ unsafe extern "C" {
         f: *mut DdNode,
         cube: *mut DdNode,
     ) -> *mut DdNode;
+    pub fn Cudd_addMinAbstract(
+        manager: *mut DdManager,
+        f: *mut DdNode,
+        cube: *mut DdNode,
+    ) -> *mut DdNode;
     pub fn Cudd_addApply(
         dd: *mut DdManager,
         op: DD_APPLY_OPERATOR,
