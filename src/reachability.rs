@@ -110,7 +110,13 @@ fn add_dead_end_self_loops(dtmc: &mut SymbolicDTMC, reachable: BddNode) {
 }
 
 pub fn compute_reachable_and_filter(dtmc: &mut SymbolicDTMC) {
-    let mut reachable = build_init_bdd(dtmc);
+    let init = build_init_bdd(dtmc);
+    dtmc.mgr.deref_node(dtmc.init.0);
+    dtmc.mgr.ref_node(init.0);
+    dtmc.init = init;
+
+    dtmc.mgr.ref_node(init.0);
+    let mut reachable = init;
 
     dtmc.mgr.ref_node(dtmc.transitions.0);
     let trans_rel = dtmc.mgr.add_to_bdd(dtmc.transitions);
@@ -137,24 +143,11 @@ pub fn compute_reachable_and_filter(dtmc: &mut SymbolicDTMC) {
         }
     }
 
-    dtmc.mgr.ref_node(reachable.0);
-    let reachable_add_for_count = dtmc.mgr.bdd_to_add(reachable);
-    dtmc.mgr.ref_node(dtmc.curr_var_cube.0);
-    let curr_cube_add = dtmc.mgr.bdd_to_add(dtmc.curr_var_cube);
-    let reachable_count_add = dtmc
-        .mgr
-        .add_sum_abstract(reachable_add_for_count, curr_cube_add);
-    dtmc.mgr.deref_node(curr_cube_add.0);
-    let reachable_states = dtmc
-        .mgr
-        .add_value(reachable_count_add.0)
-        .unwrap_or(0.0)
-        .round() as u64;
-    dtmc.reachable_states = reachable_states;
     dtmc.mgr.deref_node(dtmc.reachable.0);
     dtmc.mgr.ref_node(reachable.0);
     dtmc.reachable = reachable;
-    dtmc.mgr.deref_node(reachable_count_add.0);
+
+    let reachable_states = dtmc.reachable_state_count();
 
     println!(
         "Reachability (BFS): {} iterations, reachable states: {}",
@@ -177,5 +170,6 @@ pub fn compute_reachable_and_filter(dtmc: &mut SymbolicDTMC) {
     add_dead_end_self_loops(dtmc, reachable);
 
     dtmc.mgr.deref_node(reachable.0);
+    dtmc.mgr.deref_node(init.0);
     dtmc.mgr.deref_node(trans_rel.0);
 }

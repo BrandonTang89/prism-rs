@@ -48,8 +48,8 @@ pub struct SymbolicDTMC {
     /// 0-1 ADD support of filtered transitions.
     pub transitions_01_add: BddNode,
 
-    /// Number of reachable states computed by BFS during construction.
-    pub reachable_states: u64,
+    /// Initial state over current-state variables as a 0-1 BDD.
+    pub init: BddNode,
 
     /// Reachable states over current-state variables as a 0-1 BDD.
     pub reachable: BddNode,
@@ -65,6 +65,7 @@ impl SymbolicDTMC {
         let transitions_01_add = mgr.bdd_zero();
         let next_var_cube = mgr.bdd_one();
         let curr_var_cube = mgr.bdd_one();
+        let init = mgr.bdd_zero();
         let reachable = mgr.bdd_zero();
 
         Self {
@@ -80,7 +81,7 @@ impl SymbolicDTMC {
             curr_var_cube,
             transitions,
             transitions_01_add,
-            reachable_states: 0,
+            init,
             reachable,
             released: false,
         }
@@ -100,7 +101,8 @@ impl SymbolicDTMC {
 
     /// Number of reachable states in the DTMC
     pub fn reachable_state_count(&mut self) -> u64 {
-        self.reachable_states
+        self.mgr
+            .bdd_count_minterms(self.reachable, self.curr_var_indices.len() as u32)
     }
 
     fn release_refs(&mut self) -> RefLeakReport {
@@ -114,6 +116,7 @@ impl SymbolicDTMC {
         self.mgr.deref_node(self.transitions_01_add.0);
         self.mgr.deref_node(self.curr_var_cube.0);
         self.mgr.deref_node(self.next_var_cube.0);
+        self.mgr.deref_node(self.init.0);
         self.mgr.deref_node(self.reachable.0);
 
         for nodes in self.var_curr_nodes.values() {

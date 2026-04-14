@@ -41,4 +41,62 @@ We construct it compositionally from the commands and actions in the model. Afte
 ### Symbolic Model Checking
 
 #### Next
-To compute 
+For `P=? [X phi]`, we construct an ADD that maps each current state `s` to
+`sum_{s'} P(s,s') * I_phi(s')`, where `I_phi` is the indicator of states satisfying
+`phi`.
+
+Implementation outline (see `src/sym_check.rs`):
+
+```text
+phi_bdd  := state_formula_to_bdd(phi)              // over current vars
+phi_add  := bdd_to_add(phi_bdd)                    // 0/1 ADD over current vars
+phi_next := swap_vars(phi_add, curr -> next)       // now over next vars
+
+// Matrix-vector multiply over next-state variables:
+// result(s) = sum_{s'} P(s,s') * phi_next(s')
+result_add := add_matrix_multiply(transitions, phi_next, next_var_indices)
+
+return evaluate_in_initial_state(result_add)
+```
+
+`evaluate_in_initial_state` evaluates the result ADD at the unique initial state.
+The initial state BDD is precomputed during symbolic construction and stored in
+`SymbolicDTMC::init`.
+
+#### Bounded Until
+For `P=? [phi1 U<=k phi2]`,
+
+Let:
+- `S_yes = { s | phi2(s) }`
+- `S_question = { s | reachable(s) and phi1(s) and not phi2(s) }`
+
+`S_question` is restricted to reachable states to avoid propagating probability
+mass through unreachable encodings.
+
+The recurrence encoded by the implementation is:
+
+```text
+V_0(s) = I_{S_yes}(s)
+V_i(s) = I_{S_yes}(s)
+         + I_{S_question}(s) * sum_{s'} P(s,s') * V_{i-1}(s')
+```
+
+Implementation outline (see `src/sym_check.rs`):
+
+```text
+s_yes_add      := bdd_to_add(phi2_bdd)
+phi1_not_phi2  := phi1_bdd and (not phi2_bdd)
+s_question     := reachable and phi1_not_phi2
+s_question_add := bdd_to_add(s_question)
+
+// Keep only transitions from S_question states
+t_question := s_question_add * transitions
+
+res := s_yes_add                               // V_0
+for i in 1..=k:
+    renamed := swap_vars(res, curr -> next)    // V_{i-1}(s')
+    stepped := add_matrix_multiply(t_question, renamed, next_var_indices)
+    res     := s_yes_add + stepped             // V_i
+
+return evaluate_in_initial_state(res)
+```

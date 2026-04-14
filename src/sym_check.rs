@@ -14,7 +14,6 @@ use crate::ast::{Expr, PathFormula, Property};
 use crate::constr_symbolic::translate_expr;
 use crate::ref_manager::{AddNode, BddNode};
 use crate::symbolic_dtmc::SymbolicDTMC;
-use crate::reachability::build_init_bdd;
 
 #[derive(Clone, Debug)]
 pub enum PropertyEvaluation {
@@ -31,7 +30,8 @@ fn state_formula_to_bdd(dtmc: &mut SymbolicDTMC, expr: &Expr) -> BddNode {
 
 /// Evaluates an ADD of state values at the initial state using `Cudd_Eval`.
 fn evaluate_add_in_initial_state(dtmc: &mut SymbolicDTMC, values: AddNode) -> f64 {
-    let init = build_init_bdd(dtmc);
+    dtmc.mgr.ref_node(dtmc.init.0);
+    let init = dtmc.init;
     let inputs = dtmc
         .mgr
         .extract_leftmost_path_from_bdd(init)

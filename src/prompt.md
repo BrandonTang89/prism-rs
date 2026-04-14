@@ -7,5 +7,5 @@ Furthermore,
 
 is just the number of minterms of the reachable BDD, so we can remove this from the SymbolicDTMC struct and just compute when needed
 
-Apart from that, help me to write the docs for symbolic_model_checking, where you should insert pseudocode for the next and bounded until algorithms that are already implemented.
+Apart from that, help me to write the docs in dtmc_details, where you should insert pseudocode and descriptions for the next and bounded until algorithms that are already implemented.
 
