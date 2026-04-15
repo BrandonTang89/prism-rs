@@ -110,6 +110,7 @@
             args.pkgs.uv
             args.pkgs.graphviz
             args.pkgs.pkg-config
+            args.pkgs.gnuplot
           ]
           ++ args.pkgs.lib.optionals args.pkgs.stdenv.isLinux [
             args.pkgs.perf

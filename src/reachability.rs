@@ -1,4 +1,5 @@
 use crate::symbolic_dtmc::SymbolicDTMC;
+use tracing::info;
 
 pub fn compute_reachable_and_filter(dtmc: &mut SymbolicDTMC) {
     let init = dtmc.get_init_bdd();
@@ -35,7 +36,7 @@ pub fn compute_reachable_and_filter(dtmc: &mut SymbolicDTMC) {
     dtmc.set_reachable_and_filter(reachable);
 
     let reachable_states = dtmc.reachable_state_count();
-    println!(
+    info!(
         "Reachability (BFS): {} iterations, reachable states: {}",
         iterations, reachable_states
     );

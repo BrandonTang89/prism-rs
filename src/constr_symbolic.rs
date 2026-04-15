@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 #[allow(unused_imports)]
-use tracing::{debug, trace};
+use tracing::{debug, info, trace};
 
 use crate::analyze::DTMCModelInfo;
 use crate::ast::*;
@@ -385,11 +385,7 @@ pub fn build_symbolic_dtmc(ast: DTMCAst, model_info: DTMCModelInfo) -> SymbolicD
     let mut dtmc = SymbolicDTMC::new(ast, model_info);
     allocate_dd_vars(&mut dtmc);
     translate_dtmc(&mut dtmc);
-    println!("Constructed Transition ADD");
+    info!("Constructed transition ADD");
     compute_reachable_and_filter(&mut dtmc);
-
-    dtmc.mgr
-        .dump_add_dot(dtmc.transitions, "tmp.dot", &dtmc.dd_var_names)
-        .unwrap();
     dtmc
 }

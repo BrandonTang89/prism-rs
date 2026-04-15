@@ -1,7 +1,7 @@
 use std::cell::OnceCell;
 use std::collections::HashMap;
 
-use tracing::error;
+use tracing::{error, info};
 
 use crate::analyze::DTMCModelInfo;
 use crate::ast::DTMCAst;
@@ -336,7 +336,7 @@ impl SymbolicDTMC {
                 .expect("Transitions 0-1 should only be set once"); // own filtered_01
         }
 
-        println!("Added self-loops to {} dead-end states", dead_end_count);
+        info!("Added self-loops to {} dead-end states", dead_end_count);
         self.mgr.deref_node(dead_end_curr.0);
     }
 

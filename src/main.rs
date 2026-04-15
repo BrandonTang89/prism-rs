@@ -124,6 +124,10 @@ fn main() {
         } else {
             Level::INFO
         })
+        .without_time()
+        .with_target(false)
+        .with_file(false)
+        .with_line_number(false)
         .finish();
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
