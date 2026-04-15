@@ -1,35 +1,180 @@
-Lets now implement the prob0 and prob1 functions that
-should be used to determine s_no and s_yes respectively within the unbounded until
-checking algorithm.
+Help me to incorporate testing of the brp model with brp.prop
 
-prob0(phi1, phi2) returns the states with 0 probability that phi1 holds until phi2 holds.
-We compute it by finding states that have >0 probability of satisfying phi1 until phi2
-and then negating that. 
+Attached is the expected output from running the brp example with the PRISM library.
+Remember to specify 'N=2,MAX=3' as the constants. 
 
-sol = phi2
-loop:
-    sol' = sol OR (phi1 AND BDD_EXISTSabstract(T_01 AND ReplaceVars(sol, curr_vars, next_vars), next_vars))
-    if sol' == sol:
-        break
-    sol = sol'
+Fix any bugs you may find along the way and ensure all tests still pass
 
-return reachable AND NOT sol
 
-prob1(phi1, phi2, s_no) returns the states with proabbility 1 of stisfying phi1 until phi2. We compute it by finding states that have >0 of reaching a state in s_no and then negating that.
+direnv loaded/allowed prism-games ❯ prism/bin/prism prism-examples/dtmcs/brp/brp.pm -const N=2,MAX=3 -mtbdd prism-examples/dtmcs/brp/brp.pctl
+WARNING: A restricted method in java.lang.System has been called
+WARNING: java.lang.System::loadLibrary has been called by prism.PrismNative in an unnamed module (file:/home/brandon/playspace/prism-games/prism/classes/)
+WARNING: Use --enable-native-access=ALL-UNNAMED to avoid a warning for callers in this module
+WARNING: Restricted methods will be blocked in a future release unless native access is enabled
 
-sol = s_no
-loop:
-    sol' = sol OR ((phi_1 AND NOT phi_2) AND BDD_EXISTSabstract(T_01 AND ReplaceVars(sol, curr_vars, next_vars), next_vars))
-    if sol' == sol:
-        break
-    sol = sol'
+PRISM-games
+===========
 
-return reachable AND NOT sol
+Version: 3.2.1 (based on PRISM 4.8.1.dev)
+Date: Wed Apr 15 11:52:19 BST 2026
+*** CUSTOM BUILD - CHANGES ACTIVE ***
+Hostname: nixos
+Memory limits: cudd=1g, java(heap)=1g
+Command line: prism-games prism-examples/dtmcs/brp/brp.pm -const 'N=2,MAX=3' -mtbdd prism-examples/dtmcs/brp/brp.pctl
 
-Implement this in sym_check and confirm that the existing tests still pass.
+Parsing PRISM model file "prism-examples/dtmcs/brp/brp.pm"...
 
-Also add the P=? [ F s=34 & d=x ] test for the knuth_two_dice model to the test suite and confrm that it should be 
-: 0.0833333320915699 for x = 4
-: 0.0555555522441864 for x = 3
-: 0.0277777761220932 for x = 2
-: 0.0 for x = 1
+Type:        DTMC
+Modules:     sender receiver checker channelK channelL
+Variables:   s srep nrtr i bs s_ab fs ls r rrep fr lr br r_ab recv T k l
+Rewards:     1
+
+Parsing properties file "prism-examples/dtmcs/brp/brp.pctl"...
+
+7 properties:
+(1) P=? [ true U srep=1&rrep=3&recv ]
+(2) P=? [ true U srep=3&!(rrep=3)&recv ]
+(3) P=? [ true U s=5 ]
+(4) P=? [ true U s=5&srep=2 ]
+(5) P=? [ true U s=5&srep=1&i>8 ]
+(6) P=? [ true U !(srep=0)&!recv ]
+(7) R=? [ F "deadlock" ]
+
+---------------------------------------------------------------------
+
+Model checking: P=? [ true U srep=1&rrep=3&recv ]
+Model constants: N=2,MAX=3
+
+Building model (engine:symbolic)...
+Model constants: N=2,MAX=3
+
+Translating modules to MTBDD...
+
+Computing reachable states...
+
+Reachability (BFS): 23 iterations in 0.01 seconds (average 0.000435, setup 0.00)
+
+Time for model construction: 0.016 seconds.
+
+Warning: Deadlocks detected and fixed in 8 states
+
+Type:        DTMC
+States:      116 (1 initial)
+Transitions: 147
+
+Transition matrix: 1119 nodes (6 terminal), 147 minterms, vars: 29r/29c
+
+yes = 0, no = 116, maybe = 0
+
+Value in the initial state: 0.0
+
+Time for model checking: 0.001 seconds.
+
+Result: 0.0 (exact floating point)
+
+---------------------------------------------------------------------
+
+Model checking: P=? [ true U srep=3&!(rrep=3)&recv ]
+Model constants: N=2,MAX=3
+
+yes = 0, no = 116, maybe = 0
+
+Value in the initial state: 0.0
+
+Time for model checking: 0.0 seconds.
+
+Result: 0.0 (exact floating point)
+
+---------------------------------------------------------------------
+
+Model checking: P=? [ true U s=5 ]
+Model constants: N=2,MAX=3
+
+Prob0: 13 iterations in 0.00 seconds (average 0.000000, setup 0.00)
+
+Prob1: 13 iterations in 0.00 seconds (average 0.000000, setup 0.00)
+
+yes = 14, no = 20, maybe = 82
+
+Computing remaining probabilities...
+Engine: MTBDD
+
+Iteration matrix MTBDD... [nodes=787] [15.4 Kb]
+Diagonals MTBDD... [nodes=305] [6.0 Kb]
+
+Starting iterations...
+
+Jacobi: 33 iterations in 0.01 seconds (average 0.000303, setup 0.00)
+
+Value in the initial state: 1.5772293325415632E-6
+
+Time for model checking: 0.011 seconds.
+
+Result: 1.5772293325415632E-6 (+/- 1.2032218988391367E-12 estimated; rel err 7.628706073455107E-7)
+
+---------------------------------------------------------------------
+
+Model checking: P=? [ true U s=5&srep=2 ]
+Model constants: N=2,MAX=3
+
+Prob0: 18 iterations in 0.00 seconds (average 0.000000, setup 0.00)
+
+Prob1: 11 iterations in 0.00 seconds (average 0.000000, setup 0.00)
+
+yes = 7, no = 27, maybe = 82
+
+Computing remaining probabilities...
+Engine: MTBDD
+
+Iteration matrix MTBDD... [nodes=787] [15.4 Kb]
+Diagonals MTBDD... [nodes=305] [6.0 Kb]
+
+Starting iterations...
+
+Jacobi: 33 iterations in 0.01 seconds (average 0.000303, setup 0.00)
+
+Value in the initial state: 7.886142909415634E-7
+
+Time for model checking: 0.008 seconds.
+
+Result: 7.886142909415634E-7 (+/- 1.2032218070487946E-12 estimated; rel err 1.525741824450343E-6)
+
+---------------------------------------------------------------------
+
+Model checking: P=? [ true U s=5&srep=1&i>8 ]
+Model constants: N=2,MAX=3
+
+yes = 0, no = 116, maybe = 0
+
+Value in the initial state: 0.0
+
+Time for model checking: 0.0 seconds.
+
+Result: 0.0 (exact floating point)
+
+---------------------------------------------------------------------
+
+Model checking: P=? [ true U !(srep=0)&!recv ]
+Model constants: N=2,MAX=3
+
+Prob0: 11 iterations in 0.00 seconds (average 0.000000, setup 0.00)
+
+Prob1: 3 iterations in 0.00 seconds (average 0.000000, setup 0.00)
+
+yes = 5, no = 103, maybe = 8
+
+Computing remaining probabilities...
+Engine: MTBDD
+
+Iteration matrix MTBDD... [nodes=194] [3.8 Kb]
+Diagonals MTBDD... [nodes=305] [6.0 Kb]
+
+Starting iterations...
+
+Jacobi: 9 iterations in 0.00 seconds (average 0.000000, setup 0.00)
+
+Value in the initial state: 1.6000000000000003E-7
+
+Time for model checking: 0.004 seconds.
+
+Result: 1.6000000000000003E-7 (exact floating point)
