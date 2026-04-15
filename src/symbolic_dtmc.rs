@@ -152,6 +152,8 @@ impl SymbolicDTMC {
             }
         }
 
+        self.mgr.clear_internal_caches();
+
         self.released = true;
         RefLeakReport {
             nonzero_ref_count: self.mgr.nonzero_ref_count(),

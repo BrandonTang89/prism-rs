@@ -1,7 +1,7 @@
 # AGENTS
 
 ## Fast Start
-- Run all checks with `cargo test -- --nocapture`.
+- Run all checks with `RUST_TEST_THREADS=1 cargo test -- --nocapture`.
 - Run one integration test file with `cargo test --test dtmc_sym_constr_tests -- --nocapture`.
 - Run symbolic checking tests with `cargo test --test dtmc_sym_check_tests -- --nocapture`.
 - Run one test case with `cargo test --test dtmc_sym_constr_tests dtmc_simple_constr -- --nocapture`.
@@ -12,6 +12,7 @@
 - Release profile keeps debug symbols (`[profile.release] debug = true`, `strip = "none"`) for profiling.
 - `cudd-sys` is patched to the vendored crate at `vendor/cudd-sys` via `[patch.crates-io]` in `Cargo.toml`.
 - Default feature `build-cudd` is enabled and wires to `cudd-sys/build_cudd`; disable defaults if you need to link against a system CUDD.
+- Sylvan/Lace runtime is process-global in our wrapper; parallel Rust test threads can deadlock/stall, so run test suites with `RUST_TEST_THREADS=1` unless runtime synchronization changes.
 - CI currently runs Cargo tests only (`.github/workflows/ci.yml`); Nix flake checks are present but commented out.
 - Toolchain is pinned via `rust-toolchain.toml`.
 

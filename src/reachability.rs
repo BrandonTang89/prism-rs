@@ -9,6 +9,9 @@ pub fn compute_reachable_and_filter(dtmc: &mut SymbolicDTMC) {
 
     dtmc.mgr.ref_node(dtmc.transitions.0);
     let trans_rel = dtmc.mgr.add_to_bdd(dtmc.transitions);
+    let next_to_curr_swap_map = dtmc
+        .mgr
+        .get_swap_map_for_indices(&dtmc.next_var_indices, &dtmc.curr_var_indices);
 
     let mut iterations = 0usize;
 
@@ -21,9 +24,9 @@ pub fn compute_reachable_and_filter(dtmc: &mut SymbolicDTMC) {
         let image_next = dtmc
             .mgr
             .bdd_and_then_existsabs(old, trans_rel, dtmc.curr_var_cube);
-        let image_curr =
-            dtmc.mgr
-                .bdd_swap_variables(image_next, &dtmc.next_var_indices, &dtmc.curr_var_indices);
+        let image_curr = dtmc
+            .mgr
+            .bdd_compose_with_map(image_next, next_to_curr_swap_map);
         let new_reachable = dtmc.mgr.bdd_or(old, image_curr);
 
         reachable = new_reachable;

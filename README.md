@@ -52,6 +52,17 @@ For development, you can use `nix develop` to get a shell with all the relevant 
  - `PRISM_BENCH_TARGET_SECS`: override Criterion measurement time in seconds.
  - `PRISM_BENCH_WARMUP_SECS`: override Criterion warmup time in seconds.
 
+## Performance tuning (Sylvan)
+ 
+ The symbolic backend can be tuned via environment variables:
+ 
+ - `PRISM_SYLVAN_WORKERS` (default `0`): Lace worker threads. 
+ - `PRISM_SYLVAN_GRANULARITY`: override Sylvan task granularity (optional).
+ - `PRISM_SYLVAN_MEMORY_CAP`: memory cap passed to `sylvan_set_limits` (bytes).
+ - `PRISM_SYLVAN_TABLE_RATIO`: table/cache ratio passed to `sylvan_set_limits`.
+ - `PRISM_SYLVAN_INITIAL_RATIO`: initial table ratio passed to `sylvan_set_limits`.
+ - `PRISM_TRACK_REFS`: enable/disable Rust-side ref-tracking bookkeeping (`true`/`false`).
+  
 ## Using the binary
 
 General form:

@@ -31,7 +31,7 @@ fn state_formula_to_bdd(dtmc: &mut SymbolicDTMC, expr: &Expr) -> BddNode {
     dtmc.mgr.add_to_bdd(expr_add)
 }
 
-/// Evaluates an ADD of state values at the initial state using `Cudd_Eval`.\
+/// Evaluates an ADD of state values at the initial state by traversing the DD.\
 /// __Refs__: none\
 /// __Derefs__: values
 fn evaluate_add_in_initial_state(dtmc: &mut SymbolicDTMC, values: AddNode) -> f64 {
@@ -53,13 +53,17 @@ fn evaluate_add_in_initial_state(dtmc: &mut SymbolicDTMC, values: AddNode) -> f6
 fn check_next_probability_add(dtmc: &mut SymbolicDTMC, phi: &Expr) -> AddNode {
     let phi_bdd = state_formula_to_bdd(dtmc, phi);
     let phi_add = dtmc.mgr.bdd_to_add(phi_bdd);
+    let curr_to_next_swap_map = dtmc
+        .mgr
+        .get_swap_map_for_indices(&dtmc.curr_var_indices, &dtmc.next_var_indices);
     let phi_next = dtmc
         .mgr
-        .add_swap_vars(phi_add, &dtmc.curr_var_indices, &dtmc.next_var_indices);
+        .add_compose_with_map(phi_add, curr_to_next_swap_map);
+    let next_var_set = dtmc.mgr.get_var_set_for_indices(&dtmc.next_var_indices);
 
     dtmc.mgr.ref_node(dtmc.transitions.0);
     dtmc.mgr
-        .add_matrix_multiply(dtmc.transitions, phi_next, &dtmc.next_var_indices)
+        .add_matrix_multiply_with_var_set(dtmc.transitions, phi_next, next_var_set)
 }
 
 /// Computes the probability ADD for `P=? [phi1 U<=k phi2]`.\
@@ -88,19 +92,23 @@ fn check_bounded_until_probability_add(
 
     dtmc.mgr.ref_node(dtmc.transitions.0);
     let t_question = dtmc.mgr.add_times(s_question_add, dtmc.transitions);
+    let curr_to_next_swap_map = dtmc
+        .mgr
+        .get_swap_map_for_indices(&dtmc.curr_var_indices, &dtmc.next_var_indices);
+    let next_var_set = dtmc.mgr.get_var_set_for_indices(&dtmc.next_var_indices);
 
     dtmc.mgr.ref_node(s_yes_add.0);
     let mut res_add = AddNode(s_yes_add.0);
     for i in 1..=k {
         trace!("Bounded-until iteration {}/{}", i, k);
-        let renamed =
-            dtmc.mgr
-                .add_swap_vars(res_add, &dtmc.curr_var_indices, &dtmc.next_var_indices);
+        let renamed = dtmc
+            .mgr
+            .add_compose_with_map(res_add, curr_to_next_swap_map);
 
         dtmc.mgr.ref_node(t_question.0);
         let stepped = dtmc
             .mgr
-            .add_matrix_multiply(t_question, renamed, &dtmc.next_var_indices);
+            .add_matrix_multiply_with_var_set(t_question, renamed, next_var_set);
 
         dtmc.mgr.ref_node(s_yes_add.0);
         let s_yes_term = AddNode(s_yes_add.0);
@@ -115,6 +123,11 @@ fn check_bounded_until_probability_add(
 /// __Refs__: result\
 /// __Derefs__: a, b, init
 fn solve_jacobi(dtmc: &mut SymbolicDTMC, a: AddNode, b: AddNode, init: AddNode) -> AddNode {
+    let curr_to_next_swap_map = dtmc
+        .mgr
+        .get_swap_map_for_indices(&dtmc.curr_var_indices, &dtmc.next_var_indices);
+    let next_var_set = dtmc.mgr.get_var_set_for_indices(&dtmc.next_var_indices);
+
     let identity_bdd = dtmc.get_curr_next_identity_bdd();
     let identity_add = dtmc.mgr.bdd_to_add(identity_bdd);
 
@@ -124,7 +137,7 @@ fn solve_jacobi(dtmc: &mut SymbolicDTMC, a: AddNode, b: AddNode, init: AddNode) 
     let ones = dtmc.mgr.add_const(1.0);
     let d = dtmc
         .mgr
-        .add_matrix_multiply(a_diag, ones, &dtmc.next_var_indices);
+        .add_matrix_multiply_with_var_set(a_diag, ones, next_var_set);
 
     dtmc.mgr.ref_node(dtmc.next_var_cube.0);
     let next_var_cube_add = dtmc.mgr.bdd_to_add(dtmc.next_var_cube);
@@ -154,14 +167,12 @@ fn solve_jacobi(dtmc: &mut SymbolicDTMC, a: AddNode, b: AddNode, init: AddNode) 
     loop {
         iterations += 1;
         dtmc.mgr.ref_node(sol.0);
-        let sol_next = dtmc
-            .mgr
-            .add_swap_vars(sol, &dtmc.curr_var_indices, &dtmc.next_var_indices);
+        let sol_next = dtmc.mgr.add_compose_with_map(sol, curr_to_next_swap_map);
 
         dtmc.mgr.ref_node(a_prime.0);
         let matmul = dtmc
             .mgr
-            .add_matrix_multiply(a_prime, sol_next, &dtmc.next_var_indices);
+            .add_matrix_multiply_with_var_set(a_prime, sol_next, next_var_set);
 
         dtmc.mgr.ref_node(b_prime.0);
         let sol_prime = dtmc.mgr.add_plus(matmul, b_prime);
@@ -185,6 +196,10 @@ fn solve_jacobi(dtmc: &mut SymbolicDTMC, a: AddNode, b: AddNode, init: AddNode) 
 /// __Refs__: result\
 /// __Derefs__: phi1, phi2
 fn prob0(dtmc: &mut SymbolicDTMC, phi1: BddNode, phi2: BddNode) -> BddNode {
+    let curr_to_next_swap_map = dtmc
+        .mgr
+        .get_swap_map_for_indices(&dtmc.curr_var_indices, &dtmc.next_var_indices);
+
     let mut sol = phi2;
     let mut iterations = 0usize;
 
@@ -192,9 +207,7 @@ fn prob0(dtmc: &mut SymbolicDTMC, phi1: BddNode, phi2: BddNode) -> BddNode {
         iterations += 1;
 
         dtmc.mgr.ref_node(sol.0);
-        let sol_next =
-            dtmc.mgr
-                .bdd_swap_variables(sol, &dtmc.curr_var_indices, &dtmc.next_var_indices);
+        let sol_next = dtmc.mgr.bdd_compose_with_map(sol, curr_to_next_swap_map);
 
         let t_01 = dtmc.get_transitions_01();
         let post = dtmc
@@ -226,6 +239,10 @@ fn prob0(dtmc: &mut SymbolicDTMC, phi1: BddNode, phi2: BddNode) -> BddNode {
 /// __Refs__: result\
 /// __Derefs__: phi1, phi2, s_no
 fn prob1(dtmc: &mut SymbolicDTMC, phi1: BddNode, phi2: BddNode, s_no: BddNode) -> BddNode {
+    let curr_to_next_swap_map = dtmc
+        .mgr
+        .get_swap_map_for_indices(&dtmc.curr_var_indices, &dtmc.next_var_indices);
+
     let not_phi2 = dtmc.mgr.bdd_not(phi2);
     let phi1_and_not_phi2 = dtmc.mgr.bdd_and(phi1, not_phi2);
 
@@ -236,9 +253,7 @@ fn prob1(dtmc: &mut SymbolicDTMC, phi1: BddNode, phi2: BddNode, s_no: BddNode) -
         iterations += 1;
 
         dtmc.mgr.ref_node(sol.0);
-        let sol_next =
-            dtmc.mgr
-                .bdd_swap_variables(sol, &dtmc.curr_var_indices, &dtmc.next_var_indices);
+        let sol_next = dtmc.mgr.bdd_compose_with_map(sol, curr_to_next_swap_map);
 
         let t_01 = dtmc.get_transitions_01();
         let post = dtmc

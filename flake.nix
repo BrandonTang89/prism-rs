@@ -111,6 +111,9 @@
             args.pkgs.graphviz
             args.pkgs.pkg-config
             args.pkgs.gnuplot
+            args.pkgs.cmake
+            args.pkgs.gcc15
+            args.pkgs.gmp
             args.pkgs.hyperfine
           ]
           ++ args.pkgs.lib.optionals args.pkgs.stdenv.isLinux [

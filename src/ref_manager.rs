@@ -1,45 +1,42 @@
-//! Safe-ish, reference-count-aware wrapper around raw CUDD operations.
+//! Safe-ish, reference-count-aware wrapper around raw Sylvan operations.
 //!
-//! This module is the single place in the crate that should invoke CUDD APIs
-//! directly. It wraps raw pointers in lightweight node newtypes and centralizes
-//! `Cudd_Ref`/`Cudd_RecursiveDeref` bookkeeping so call sites can work with
-//! higher-level BDD/ADD operations.
-//!
-//! ## Ownership model
-//! - Most combinators consume their input handles logically and return a newly
-//!   referenced result.
-//! - Methods that internally keep an argument alive without consuming it are
-//!   documented explicitly.
-//! - `RefManager` owns the underlying `DdManager` and releases it in `Drop`.
+//! This module is the single place in the crate that should invoke Sylvan APIs
+//! directly. It wraps raw MTBDD handles in lightweight node newtypes and
+//! centralizes `Sylvan_ref`/`Sylvan_deref` bookkeeping so call sites can work
+//! with higher-level BDD/ADD operations.
 
 use std::{
     collections::{HashMap, HashSet},
+    env,
     fs::File,
     io::{self, Write},
-    os::raw::c_int,
-    ptr,
+    sync::{Mutex, MutexGuard, OnceLock},
 };
 
-use cudd_sys::{
-    DdManager, DdNode,
-    cudd::{
-        CUDD_CACHE_SLOTS, CUDD_UNIQUE_SLOTS, Cudd_BddToAdd, Cudd_CheckZeroRef, Cudd_CountMinterm,
-        Cudd_DagSize, Cudd_DebugCheck, Cudd_E, Cudd_EqualSupNorm, Cudd_Eval, Cudd_ForeachNode,
-        Cudd_IsComplement, Cudd_IsConstant, Cudd_NodeReadIndex, Cudd_Not, Cudd_Quit,
-        Cudd_ReadLogicZero, Cudd_ReadOne, Cudd_ReadSize, Cudd_RecursiveDeref, Cudd_Ref,
-        Cudd_Regular, Cudd_T, Cudd_V, Cudd_addApply, Cudd_addBddPattern, Cudd_addBddThreshold,
-        Cudd_addConst, Cudd_addDivide, Cudd_addExistAbstract, Cudd_addIte, Cudd_addIthVar,
-        Cudd_addMatrixMultiply, Cudd_addMaxAbstract, Cudd_addMinAbstract, Cudd_addMinus,
-        Cudd_addOrAbstract, Cudd_addPlus, Cudd_addSwapVariables, Cudd_addTimes, Cudd_bddAnd,
-        Cudd_bddAndAbstract, Cudd_bddExistAbstract, Cudd_bddIthVar, Cudd_bddNewVar, Cudd_bddOr,
-        Cudd_bddSwapVariables, Cudd_bddXnor, Cudd_bddXor, DD_APPLY_OPERATOR,
+use sylvan_sys::{
+    MTBDD, SYLVAN_FALSE, SYLVAN_INVALID, SYLVAN_TRUE,
+    bdd::{
+        Sylvan_and, Sylvan_and_exists, Sylvan_compose, Sylvan_equiv, Sylvan_exists,
+        Sylvan_get_granularity, Sylvan_not, Sylvan_or, Sylvan_set_granularity, Sylvan_xor,
+    },
+    common::{Sylvan_init_package, Sylvan_set_limits},
+    lace::{Lace_start, Task, WorkerP},
+    mt::Sylvan_init_mt,
+    mtbdd::{
+        MTBDD_APPLY_OP, Sylvan_high, Sylvan_init_bdd, Sylvan_init_mtbdd, Sylvan_ithvar, Sylvan_low,
+        Sylvan_map_add, Sylvan_map_empty, Sylvan_mtbdd_abstract_max, Sylvan_mtbdd_abstract_min,
+        Sylvan_mtbdd_abstract_plus, Sylvan_mtbdd_and_abstract_plus, Sylvan_mtbdd_comp,
+        Sylvan_mtbdd_compose, Sylvan_mtbdd_deref, Sylvan_mtbdd_double, Sylvan_mtbdd_equal_norm_d,
+        Sylvan_mtbdd_getdouble, Sylvan_mtbdd_hascomp, Sylvan_mtbdd_isleaf, Sylvan_mtbdd_ite,
+        Sylvan_mtbdd_ithvar, Sylvan_mtbdd_minus, Sylvan_mtbdd_nodecount, Sylvan_mtbdd_plus,
+        Sylvan_mtbdd_ref, Sylvan_mtbdd_satcount, Sylvan_mtbdd_strict_threshold_double,
+        Sylvan_mtbdd_times, Sylvan_set_fromarray, Sylvan_var,
     },
 };
 
 pub const EPS: f64 = 1e-10;
 /// Maximum number of leaked nodes reported by leak diagnostics.
 pub static LEAK_REPORT_LIMIT: usize = 10;
-const ENABLE_CUDD_DEBUGCHECK_ON_DROP: bool = true;
 
 #[derive(Debug, Clone, Copy)]
 /// Basic structural statistics for an ADD.
@@ -53,18 +50,18 @@ pub struct AddStats {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-/// Opaque raw pointer identity for CUDD nodes.
-pub struct Node(*mut DdNode);
+/// Opaque raw identity for Sylvan DD nodes.
+pub struct Node(MTBDD);
 
 impl std::fmt::Debug for Node {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "N{:x}", self.0 as usize)
+        write!(f, "N{:x}", self.0)
     }
 }
 
 impl Node {
     #[inline]
-    fn as_ptr(self) -> *mut DdNode {
+    fn raw(self) -> MTBDD {
         self.0
     }
 }
@@ -77,13 +74,13 @@ impl BddNode {
     #[inline]
     /// Returns the regular (non-complemented) view of this node.
     pub fn regular(self) -> Self {
-        Self(Node(unsafe { Cudd_Regular(self.0.as_ptr()) }))
+        Self(Node(regular_raw(self.0.raw())))
     }
 
     #[inline]
     /// Returns `true` if this node is complement-tagged.
     pub fn is_complemented(self) -> bool {
-        unsafe { Cudd_IsComplement(self.0.as_ptr()) != 0 }
+        is_complemented_raw(self.0.raw())
     }
 }
 
@@ -91,100 +88,361 @@ impl BddNode {
 /// Typed wrapper for ADD nodes.
 pub struct AddNode(pub Node);
 
-/// Owns a CUDD manager and provides typed BDD/ADD operations.
+#[derive(Default)]
+struct SylvanRuntime {
+    initialized: bool,
+}
+
+/// Owns a Sylvan runtime handle and provides typed BDD/ADD operations.
 pub struct RefManager {
-    mgr: *mut DdManager,
+    next_var_index: usize,
+    owned_refs: HashMap<Node, usize>,
+    internal_cache_ref_counts: HashMap<Node, usize>,
+    cube_set_cache: HashMap<Node, Node>,
+    var_set_cache: HashMap<Vec<u16>, Node>,
+    swap_map_cache: HashMap<(Vec<u16>, Vec<u16>), Node>,
+    track_owned_refs: bool,
+    runtime_guard: Option<MutexGuard<'static, ()>>,
 }
 
-extern "C" fn add_plus_op(
-    dd: *mut DdManager,
-    f: *mut *mut DdNode,
-    g: *mut *mut DdNode,
-) -> *mut DdNode {
-    unsafe { Cudd_addPlus(dd, f, g) }
+fn env_u32(name: &str) -> Option<u32> {
+    env::var(name).ok().and_then(|raw| raw.parse::<u32>().ok())
 }
 
-extern "C" fn add_minus_op(
-    dd: *mut DdManager,
-    f: *mut *mut DdNode,
-    g: *mut *mut DdNode,
-) -> *mut DdNode {
-    unsafe { Cudd_addMinus(dd, f, g) }
+fn env_bool(name: &str, default: bool) -> bool {
+    match env::var(name) {
+        Ok(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => true,
+            "0" | "false" | "no" | "off" => false,
+            _ => default,
+        },
+        Err(_) => default,
+    }
 }
 
-extern "C" fn add_times_op(
-    dd: *mut DdManager,
-    f: *mut *mut DdNode,
-    g: *mut *mut DdNode,
-) -> *mut DdNode {
-    unsafe { Cudd_addTimes(dd, f, g) }
+fn sylvan_api_mutex() -> &'static Mutex<()> {
+    static API_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
+    API_MUTEX.get_or_init(|| Mutex::new(()))
 }
 
-extern "C" fn add_divide_op(
-    dd: *mut DdManager,
-    f: *mut *mut DdNode,
-    g: *mut *mut DdNode,
-) -> *mut DdNode {
-    unsafe { Cudd_addDivide(dd, f, g) }
+fn lock_sylvan_api() -> MutexGuard<'static, ()> {
+    sylvan_api_mutex()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn sylvan_runtime() -> &'static Mutex<SylvanRuntime> {
+    static RUNTIME: OnceLock<Mutex<SylvanRuntime>> = OnceLock::new();
+    RUNTIME.get_or_init(|| Mutex::new(SylvanRuntime::default()))
+}
+
+fn lock_runtime() -> std::sync::MutexGuard<'static, SylvanRuntime> {
+    sylvan_runtime()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn ensure_runtime_started() {
+    let mut runtime = lock_runtime();
+    if !runtime.initialized {
+        let workers = env_u32("PRISM_SYLVAN_WORKERS").unwrap_or(0);
+        let memory_cap = env::var("PRISM_SYLVAN_MEMORY_CAP")
+            .ok()
+            .and_then(|raw| raw.parse::<usize>().ok())
+            .unwrap_or(1usize << 30);
+        let table_ratio = env::var("PRISM_SYLVAN_TABLE_RATIO")
+            .ok()
+            .and_then(|raw| raw.parse::<i32>().ok())
+            .unwrap_or(1);
+        let initial_ratio = env::var("PRISM_SYLVAN_INITIAL_RATIO")
+            .ok()
+            .and_then(|raw| raw.parse::<i32>().ok())
+            .unwrap_or(5);
+        unsafe {
+            Lace_start(workers, 0);
+            Sylvan_set_limits(memory_cap, table_ratio, initial_ratio);
+            Sylvan_init_package();
+            Sylvan_init_mt();
+            Sylvan_init_mtbdd();
+            Sylvan_init_bdd();
+            if let Some(granularity) = env_u32("PRISM_SYLVAN_GRANULARITY") {
+                if granularity > 0 {
+                    Sylvan_set_granularity(granularity as i32);
+                }
+            }
+
+            let _ = Sylvan_get_granularity();
+        }
+        runtime.initialized = true;
+    }
+}
+
+fn release_runtime_manager() {
+    // Keep the Sylvan/Lace runtime alive for the process lifetime.
+    // Repeated init/quit cycles across parallel tests can deadlock in practice.
+}
+
+#[inline]
+fn is_complemented_raw(node: MTBDD) -> bool {
+    unsafe { Sylvan_mtbdd_hascomp(node) != 0 }
+}
+
+#[inline]
+fn regular_raw(node: MTBDD) -> MTBDD {
+    if is_complemented_raw(node) {
+        unsafe { Sylvan_mtbdd_comp(node) }
+    } else {
+        node
+    }
+}
+
+#[inline]
+fn leaf_to_f64(node: MTBDD) -> f64 {
+    if node == SYLVAN_FALSE {
+        0.0
+    } else if node == SYLVAN_TRUE {
+        1.0
+    } else {
+        unsafe { Sylvan_mtbdd_getdouble(node) }
+    }
+}
+
+extern "C" fn mtbdd_divide_op(
+    _w: *mut WorkerP,
+    _t: *mut Task,
+    a: *mut MTBDD,
+    b: *mut MTBDD,
+) -> MTBDD {
+    unsafe {
+        let lhs = *a;
+        let rhs = *b;
+        if Sylvan_mtbdd_isleaf(lhs) != 0 && Sylvan_mtbdd_isleaf(rhs) != 0 {
+            let lv = leaf_to_f64(lhs);
+            let rv = leaf_to_f64(rhs);
+            return Sylvan_mtbdd_double(lv / rv);
+        }
+        SYLVAN_INVALID
+    }
 }
 
 impl RefManager {
-    /// Creates a new CUDD manager with default unique/cache sizing.
+    /// Creates a new Sylvan-backed manager.
     pub fn new() -> Self {
-        let mgr =
-            unsafe { cudd_sys::cudd::Cudd_Init(0, 0, CUDD_UNIQUE_SLOTS, CUDD_CACHE_SLOTS, 0) };
-        assert!(!mgr.is_null(), "Failed to initialize CUDD manager");
-        Self { mgr }
+        let runtime_guard = lock_sylvan_api();
+        ensure_runtime_started();
+        Self {
+            next_var_index: 0,
+            owned_refs: HashMap::new(),
+            internal_cache_ref_counts: HashMap::new(),
+            cube_set_cache: HashMap::new(),
+            var_set_cache: HashMap::new(),
+            swap_map_cache: HashMap::new(),
+            track_owned_refs: env_bool("PRISM_TRACK_REFS", cfg!(debug_assertions)),
+            runtime_guard: Some(runtime_guard),
+        }
     }
 
-    /// Returns CUDD's shared BDD one node without changing references.
+    /// Returns Sylvan's shared BDD one node without changing references.
     fn one_bdd(&self) -> BddNode {
-        BddNode(Node(unsafe { Cudd_ReadOne(self.mgr) }))
+        BddNode(Node(SYLVAN_TRUE))
     }
 
     fn zero_bdd(&self) -> BddNode {
-        BddNode(Node(unsafe { Cudd_ReadLogicZero(self.mgr) }))
+        BddNode(Node(SYLVAN_FALSE))
     }
 
-    fn must_node(&self, p: *mut DdNode, op: &str) -> Node {
-        assert!(!p.is_null(), "CUDD returned NULL in {op}");
-        Node(p)
+    fn must_node(&self, n: MTBDD, op: &str) -> Node {
+        assert!(n != SYLVAN_INVALID, "Sylvan returned INVALID in {op}");
+        Node(n)
     }
 
     #[inline]
     fn regular_node(&self, node: Node) -> Node {
-        Node(unsafe { Cudd_Regular(node.as_ptr()) })
+        Node(regular_raw(node.raw()))
     }
 
-    #[inline]
-    fn is_complemented_node(&self, node: Node) -> bool {
-        unsafe { Cudd_IsComplement(node.as_ptr()) != 0 }
+    fn ensure_var_index(&mut self, idx: u16) {
+        self.next_var_index = self.next_var_index.max(idx as usize + 1);
     }
 
-    fn add_apply(&self, op: DD_APPLY_OPERATOR, a: Node, b: Node, op_name: &str) -> Node {
+    fn cube_to_set(&self, cube: Node) -> Node {
+        let mut vars = HashSet::new();
+        let mut visited = HashSet::new();
+        self.collect_support_vars(cube, &mut visited, &mut vars);
+
+        let mut indices: Vec<u16> = vars.into_iter().collect();
+        indices.sort_unstable();
+        self.var_set_from_indices(&indices)
+    }
+
+    fn collect_support_vars(
+        &self,
+        node: Node,
+        visited: &mut HashSet<Node>,
+        vars: &mut HashSet<u16>,
+    ) {
+        let reg = self.regular_node(node);
+        if !visited.insert(reg) || self.is_constant(reg) {
+            return;
+        }
+
+        vars.insert(self.read_var_index(reg));
+        self.collect_support_vars(self.read_then(reg), visited, vars);
+        self.collect_support_vars(self.read_else(reg), visited, vars);
+    }
+
+    fn var_set_from_indices(&self, vars: &[u16]) -> Node {
+        let mut arr: Vec<u32> = vars.iter().map(|&v| u32::from(v)).collect();
         self.must_node(
-            unsafe { Cudd_addApply(self.mgr, op, a.as_ptr(), b.as_ptr()) },
-            op_name,
+            unsafe { Sylvan_set_fromarray(arr.as_mut_ptr(), arr.len()) },
+            "Sylvan_set_fromarray",
         )
+    }
+
+    fn get_or_build_var_set_from_indices(&mut self, vars: &[u16]) -> Node {
+        let key = vars.to_vec();
+        if let Some(&set) = self.var_set_cache.get(&key) {
+            return set;
+        }
+
+        let set = self.var_set_from_indices(vars);
+        self.ref_node(set);
+        self.mark_internal_cache_ref(set);
+        self.var_set_cache.insert(key, set);
+        set
+    }
+
+    fn get_or_build_cube_set(&mut self, cube: Node) -> Node {
+        let key = self.regular_node(cube);
+        if let Some(&vars) = self.cube_set_cache.get(&key) {
+            return vars;
+        }
+
+        let vars = self.cube_to_set(key);
+        self.ref_node(vars);
+        self.mark_internal_cache_ref(vars);
+        self.cube_set_cache.insert(key, vars);
+        vars
+    }
+
+    fn build_swap_map_uncached(&mut self, x: &[u16], y: &[u16]) -> Node {
+        let mut map = self.must_node(unsafe { Sylvan_map_empty() }, "Sylvan_map_empty");
+        self.ref_node(map);
+
+        for (&xi, &yi) in x.iter().zip(y.iter()) {
+            self.ensure_var_index(xi);
+            self.ensure_var_index(yi);
+
+            let y_var = self.must_node(unsafe { Sylvan_ithvar(u32::from(yi)) }, "Sylvan_ithvar(y)");
+            self.ref_node(y_var);
+            let new_map_xy = self.must_node(
+                unsafe { Sylvan_map_add(map.raw(), u32::from(xi), y_var.raw()) },
+                "Sylvan_map_add(x->y)",
+            );
+            self.ref_node(new_map_xy);
+            self.deref_node(map);
+            self.deref_node(y_var);
+            map = new_map_xy;
+
+            let x_var = self.must_node(unsafe { Sylvan_ithvar(u32::from(xi)) }, "Sylvan_ithvar(x)");
+            self.ref_node(x_var);
+            let new_map_yx = self.must_node(
+                unsafe { Sylvan_map_add(map.raw(), u32::from(yi), x_var.raw()) },
+                "Sylvan_map_add(y->x)",
+            );
+            self.ref_node(new_map_yx);
+            self.deref_node(map);
+            self.deref_node(x_var);
+            map = new_map_yx;
+        }
+
+        map
+    }
+
+    fn get_or_build_swap_map(&mut self, x: &[u16], y: &[u16]) -> Node {
+        let key = (x.to_vec(), y.to_vec());
+        if let Some(&map) = self.swap_map_cache.get(&key) {
+            return map;
+        }
+
+        let map = self.build_swap_map_uncached(x, y);
+        self.mark_internal_cache_ref(map);
+        self.swap_map_cache.insert(key, map);
+        map
+    }
+
+    fn mark_internal_cache_ref(&mut self, node: Node) {
+        let reg = self.regular_node(node);
+        *self.internal_cache_ref_counts.entry(reg).or_insert(0) += 1;
+    }
+
+    fn unmark_internal_cache_ref(&mut self, node: Node) {
+        let reg = self.regular_node(node);
+        if let Some(count) = self.internal_cache_ref_counts.get_mut(&reg) {
+            *count -= 1;
+            if *count == 0 {
+                self.internal_cache_ref_counts.remove(&reg);
+            }
+        } else {
+            debug_assert!(false, "internal cache deref of untracked node: {:?}", reg);
+        }
     }
 
     fn track_ref(&mut self, node: Node) {
         let reg = self.regular_node(node);
-        unsafe { Cudd_Ref(reg.as_ptr()) };
+        unsafe {
+            Sylvan_mtbdd_ref(reg.raw());
+        }
+        if self.track_owned_refs {
+            *self.owned_refs.entry(reg).or_insert(0) += 1;
+        }
     }
 
     fn track_deref(&mut self, node: Node) {
         let reg = self.regular_node(node);
-        unsafe { Cudd_RecursiveDeref(self.mgr, reg.as_ptr()) };
+        unsafe {
+            Sylvan_mtbdd_deref(reg.raw());
+        }
+        if self.track_owned_refs {
+            if let Some(count) = self.owned_refs.get_mut(&reg) {
+                *count -= 1;
+                if *count == 0 {
+                    self.owned_refs.remove(&reg);
+                }
+            } else {
+                debug_assert!(false, "deref of untracked node: {:?}", reg);
+            }
+        }
     }
 
-    /// Increments the CUDD reference count of `node` and returns it.
+    /// Releases internal memoization roots that are retained by the manager.
+    pub fn clear_internal_caches(&mut self) {
+        let cube_sets: Vec<Node> = self.cube_set_cache.drain().map(|(_, n)| n).collect();
+        for n in cube_sets {
+            self.unmark_internal_cache_ref(n);
+            self.deref_node(n);
+        }
+
+        let var_sets: Vec<Node> = self.var_set_cache.drain().map(|(_, n)| n).collect();
+        for n in var_sets {
+            self.unmark_internal_cache_ref(n);
+            self.deref_node(n);
+        }
+
+        let swap_maps: Vec<Node> = self.swap_map_cache.drain().map(|(_, n)| n).collect();
+        for n in swap_maps {
+            self.unmark_internal_cache_ref(n);
+            self.deref_node(n);
+        }
+    }
+
+    /// Increments the Sylvan reference count of `node` and returns it.
     pub fn ref_node(&mut self, node: Node) -> Node {
         self.track_ref(node);
         node
     }
 
-    /// Decrements the CUDD reference count of `node` and returns it.
+    /// Decrements the Sylvan reference count of `node` and returns it.
     pub fn deref_node(&mut self, node: Node) -> Node {
         self.track_deref(node);
         node
@@ -192,78 +450,88 @@ impl RefManager {
 
     /// Returns the number of nodes still carrying non-zero references.
     pub fn nonzero_ref_count(&self) -> usize {
-        let raw = unsafe { Cudd_CheckZeroRef(self.mgr) };
-        raw as usize
+        if !self.track_owned_refs {
+            return 0;
+        }
+
+        self.owned_refs
+            .iter()
+            .filter(|(node, count)| {
+                let internal = self
+                    .internal_cache_ref_counts
+                    .get(*node)
+                    .copied()
+                    .unwrap_or(0);
+                **count > internal
+            })
+            .count()
     }
 
-    /// Returns the number of DD variables currently allocated in the manager.
+    /// Returns the number of DD variables currently allocated in this manager view.
     pub fn var_count(&self) -> usize {
-        unsafe { Cudd_ReadSize(self.mgr) as usize }
+        self.next_var_index
     }
 
-    /// Validate manager internal consistency.
+    /// Validate tracked node validity.
     pub fn debug_check(&self) -> bool {
-        unsafe { Cudd_DebugCheck(self.mgr) == 0 }
+        self.owned_refs
+            .keys()
+            .all(|n| unsafe { sylvan_sys::mtbdd::Sylvan_mtbdd_test_isvalid(n.raw()) != 0 })
     }
 
     /// Reads the variable index for `node`, or `u16::MAX` for constants.
     pub fn read_var_index(&self, node: Node) -> u16 {
-        let reg = self.regular_node(node);
         if self.is_constant(node) {
             u16::MAX
         } else {
-            unsafe { Cudd_NodeReadIndex(reg.as_ptr()) as u16 }
+            let reg = self.regular_node(node);
+            unsafe { Sylvan_var(reg.raw()) as u16 }
         }
     }
 
     /// Returns the THEN child of a node, preserving complement semantics.
     pub fn read_then(&self, node: Node) -> Node {
-        let reg = self.regular_node(node);
         if self.is_constant(node) {
-            reg
+            self.regular_node(node)
         } else {
-            let t = Node(unsafe { Cudd_T(reg.as_ptr()) });
-            if self.is_complemented_node(node) {
-                Node(unsafe { Cudd_Not(t.as_ptr()) })
-            } else {
-                t
-            }
+            self.must_node(unsafe { Sylvan_high(node.raw()) }, "Sylvan_high")
         }
     }
 
     /// Returns the ELSE child of a node, preserving complement semantics.
     pub fn read_else(&self, node: Node) -> Node {
-        let reg = self.regular_node(node);
         if self.is_constant(node) {
-            reg
+            self.regular_node(node)
         } else {
-            let e = Node(unsafe { Cudd_E(reg.as_ptr()) });
-            if self.is_complemented_node(node) {
-                Node(unsafe { Cudd_Not(e.as_ptr()) })
-            } else {
-                e
-            }
+            self.must_node(unsafe { Sylvan_low(node.raw()) }, "Sylvan_low")
         }
     }
 
     /// Returns `true` if `node` is a terminal (constant) node.
     pub fn is_constant(&self, node: Node) -> bool {
         let reg = self.regular_node(node);
-        unsafe { Cudd_IsConstant(reg.as_ptr()) != 0 }
+        unsafe { Sylvan_mtbdd_isleaf(reg.raw()) != 0 }
     }
 
     /// Returns the terminal value for constant nodes, otherwise `None`.
     pub fn add_value(&self, node: Node) -> Option<f64> {
+        if !self.is_constant(node) {
+            return None;
+        }
+
+        if node.raw() == SYLVAN_FALSE {
+            return Some(0.0);
+        }
+        if node.raw() == SYLVAN_TRUE {
+            return Some(1.0);
+        }
+
         let reg = self.regular_node(node);
-        if self.is_constant(node) {
-            let v = unsafe { Cudd_V(reg.as_ptr()) };
-            if self.is_complemented_node(node) {
-                Some(1.0 - v)
-            } else {
-                Some(v)
-            }
+        let v = leaf_to_f64(reg.raw());
+        if is_complemented_raw(node.raw()) {
+            Some(1.0 - v)
         } else {
-            None
+            Some(v)
         }
     }
 
@@ -282,13 +550,21 @@ impl RefManager {
             required
         );
 
-        let mut eval_inputs: Vec<c_int> = inputs.iter().map(|&v| v as c_int).collect();
-        let terminal = self.must_node(
-            unsafe { Cudd_Eval(self.mgr, f.0.as_ptr(), eval_inputs.as_mut_ptr()) },
-            "Cudd_Eval",
-        );
-        self.add_value(terminal)
-            .expect("Cudd_Eval on ADD must return terminal")
+        let mut node = f.0;
+        loop {
+            if self.is_constant(node) {
+                return self
+                    .add_value(node)
+                    .expect("evaluation must end in constant terminal");
+            }
+
+            let var_index = self.read_var_index(node) as usize;
+            node = if inputs[var_index] == 0 {
+                self.read_else(node)
+            } else {
+                self.read_then(node)
+            };
+        }
     }
 
     /// Extracts one satisfying valuation from a BDD by following a deterministic path.
@@ -331,50 +607,56 @@ impl RefManager {
     pub fn bdd_one(&mut self) -> BddNode {
         BddNode(self.ref_node(self.one_bdd().0))
     }
+
     /// Returns a newly referenced BDD zero node.
     pub fn bdd_zero(&mut self) -> BddNode {
         BddNode(self.ref_node(self.zero_bdd().0))
     }
+
     /// Returns a newly referenced ADD constant zero node.
     pub fn add_zero(&mut self) -> AddNode {
         self.add_const(0.0)
     }
+
     /// Returns a newly referenced ADD constant node.
     pub fn add_const(&mut self, value: f64) -> AddNode {
-        let n = self.must_node(unsafe { Cudd_addConst(self.mgr, value) }, "Cudd_addConst");
+        let n = self.must_node(unsafe { Sylvan_mtbdd_double(value) }, "Sylvan_mtbdd_double");
         AddNode(self.ref_node(n))
     }
 
     /// Allocates a new BDD variable and returns it referenced.
     pub fn new_var(&mut self) -> BddNode {
-        let n = self.must_node(unsafe { Cudd_bddNewVar(self.mgr) }, "Cudd_bddNewVar");
-        BddNode(self.ref_node(n))
+        let idx = self.next_var_index as u16;
+        self.next_var_index += 1;
+        self.bdd_var(idx)
     }
 
     /// Returns the BDD variable node for `var_index`, referenced.
     pub fn bdd_var(&mut self, var_index: u16) -> BddNode {
+        self.ensure_var_index(var_index);
         let n = self.must_node(
-            unsafe { Cudd_bddIthVar(self.mgr, var_index as i32) },
-            "Cudd_bddIthVar",
+            unsafe { Sylvan_ithvar(u32::from(var_index)) },
+            "Sylvan_ithvar",
         );
         BddNode(self.ref_node(n))
     }
 
     /// Returns the ADD variable node for `var_index`, referenced.
     pub fn add_var(&mut self, var_index: u16) -> AddNode {
+        self.ensure_var_index(var_index);
         let n = self.must_node(
-            unsafe { Cudd_addIthVar(self.mgr, var_index as i32) },
-            "Cudd_addIthVar",
+            unsafe { Sylvan_mtbdd_ithvar(u32::from(var_index)) },
+            "Sylvan_mtbdd_ithvar",
         );
         AddNode(self.ref_node(n))
     }
 
     /// Logical negation of `a`.
     ///
-    /// _Refs_: result\
-    /// _Derefs_: a
+    /// __Refs__: result\
+    /// __Derefs__: a
     pub fn bdd_not(&mut self, a: BddNode) -> BddNode {
-        let n = Node(unsafe { Cudd_Not(a.0.as_ptr()) });
+        let n = self.must_node(unsafe { Sylvan_not(a.0.raw()) }, "Sylvan_not");
         self.ref_node(n);
         self.deref_node(a.0);
         BddNode(n)
@@ -382,12 +664,12 @@ impl RefManager {
 
     /// Boolean equivalence (`XNOR`) of `a` and `b`.
     ///
-    /// _Refs_: result\
-    /// _Derefs_: a, b
+    /// __Refs__: result\
+    /// __Derefs__: a, b
     pub fn bdd_equals(&mut self, a: BddNode, b: BddNode) -> BddNode {
         let n = self.must_node(
-            unsafe { Cudd_bddXnor(self.mgr, a.0.as_ptr(), b.0.as_ptr()) },
-            "Cudd_bddXnor",
+            unsafe { Sylvan_equiv(a.0.raw(), b.0.raw()) },
+            "Sylvan_equiv",
         );
         self.ref_node(n);
         self.deref_node(a.0);
@@ -397,13 +679,10 @@ impl RefManager {
 
     /// Boolean inequality (`XOR`) of `a` and `b`.
     ///
-    /// _Refs_: result\
-    /// _Derefs_: a, b
+    /// __Refs__: result\
+    /// __Derefs__: a, b
     pub fn bdd_nequals(&mut self, a: BddNode, b: BddNode) -> BddNode {
-        let n = self.must_node(
-            unsafe { Cudd_bddXor(self.mgr, a.0.as_ptr(), b.0.as_ptr()) },
-            "Cudd_bddXor",
-        );
+        let n = self.must_node(unsafe { Sylvan_xor(a.0.raw(), b.0.raw()) }, "Sylvan_xor");
         self.ref_node(n);
         self.deref_node(a.0);
         self.deref_node(b.0);
@@ -412,13 +691,10 @@ impl RefManager {
 
     /// Conjunction of `a` and `b`.
     ///
-    /// _Refs_: result\
-    /// _Derefs_: a, b
+    /// __Refs__: result\
+    /// __Derefs__: a, b
     pub fn bdd_and(&mut self, a: BddNode, b: BddNode) -> BddNode {
-        let n = self.must_node(
-            unsafe { Cudd_bddAnd(self.mgr, a.0.as_ptr(), b.0.as_ptr()) },
-            "Cudd_bddAnd",
-        );
+        let n = self.must_node(unsafe { Sylvan_and(a.0.raw(), b.0.raw()) }, "Sylvan_and");
         self.ref_node(n);
         self.deref_node(a.0);
         self.deref_node(b.0);
@@ -427,13 +703,10 @@ impl RefManager {
 
     /// Disjunction of `a` and `b`.
     ///
-    /// _Refs_: result\
-    /// _Derefs_: a, b
+    /// __Refs__: result\
+    /// __Derefs__: a, b
     pub fn bdd_or(&mut self, a: BddNode, b: BddNode) -> BddNode {
-        let n = self.must_node(
-            unsafe { Cudd_bddOr(self.mgr, a.0.as_ptr(), b.0.as_ptr()) },
-            "Cudd_bddOr",
-        );
+        let n = self.must_node(unsafe { Sylvan_or(a.0.raw(), b.0.raw()) }, "Sylvan_or");
         self.ref_node(n);
         self.deref_node(a.0);
         self.deref_node(b.0);
@@ -442,12 +715,14 @@ impl RefManager {
 
     /// Existentially abstracts variables in `cube` from `a`.
     ///
-    /// _Refs_: result\
-    /// _Derefs_: a
+    /// __Refs__: result\
+    /// __Derefs__: a
     pub fn bdd_exists_abstract(&mut self, a: BddNode, cube: BddNode) -> BddNode {
+        let vars = self.get_or_build_cube_set(cube.0);
+
         let n = self.must_node(
-            unsafe { Cudd_bddExistAbstract(self.mgr, a.0.as_ptr(), cube.0.as_ptr()) },
-            "Cudd_bddExistAbstract",
+            unsafe { Sylvan_exists(a.0.raw(), vars.raw()) },
+            "Sylvan_exists",
         );
         self.ref_node(n);
         self.deref_node(a.0);
@@ -456,12 +731,14 @@ impl RefManager {
 
     /// Computes `(f AND g)` then existentially abstracts variables in `cube`.\
     /// This is essentially matrix multiplication for BDDs\
-    /// _Refs_: result\
-    /// _Derefs_: f, g
+    /// __Refs__: result\
+    /// __Derefs__: f, g
     pub fn bdd_and_then_existsabs(&mut self, f: BddNode, g: BddNode, cube: BddNode) -> BddNode {
+        let vars = self.get_or_build_cube_set(cube.0);
+
         let n = self.must_node(
-            unsafe { Cudd_bddAndAbstract(self.mgr, f.0.as_ptr(), g.0.as_ptr(), cube.0.as_ptr()) },
-            "Cudd_bddAndAbstract",
+            unsafe { Sylvan_and_exists(f.0.raw(), g.0.raw(), vars.raw()) },
+            "Sylvan_and_exists",
         );
         self.ref_node(n);
         self.deref_node(f.0);
@@ -473,39 +750,14 @@ impl RefManager {
     ///
     /// both index slices must have the same length.
     ///
-    /// _Refs_: result\
-    /// _Derefs_: f
+    /// __Refs__: result\
+    /// __Derefs__: f
     pub fn bdd_swap_variables(&mut self, f: BddNode, x: &[u16], y: &[u16]) -> BddNode {
         assert_eq!(x.len(), y.len());
-        let mut xs = Vec::with_capacity(x.len());
-        let mut ys = Vec::with_capacity(y.len());
-        for (&xi, &yi) in x.iter().zip(y.iter()) {
-            xs.push(
-                self.must_node(
-                    unsafe { Cudd_bddIthVar(self.mgr, xi as i32) },
-                    "Cudd_bddIthVar(x)",
-                )
-                .as_ptr(),
-            );
-            ys.push(
-                self.must_node(
-                    unsafe { Cudd_bddIthVar(self.mgr, yi as i32) },
-                    "Cudd_bddIthVar(y)",
-                )
-                .as_ptr(),
-            );
-        }
+        let map = self.get_or_build_swap_map(x, y);
         let n = self.must_node(
-            unsafe {
-                Cudd_bddSwapVariables(
-                    self.mgr,
-                    f.0.as_ptr(),
-                    xs.as_mut_ptr(),
-                    ys.as_mut_ptr(),
-                    x.len() as i32,
-                )
-            },
-            "Cudd_bddSwapVariables",
+            unsafe { Sylvan_compose(f.0.raw(), map.raw()) },
+            "Sylvan_compose",
         );
         self.ref_node(n);
         self.deref_node(f.0);
@@ -516,39 +768,14 @@ impl RefManager {
     ///
     /// Both index slices must have the same length.
     ///
-    /// _Refs_: result\
-    /// _Derefs_: f
+    /// __Refs__: result\
+    /// __Derefs__: f
     pub fn add_swap_vars(&mut self, f: AddNode, x: &[u16], y: &[u16]) -> AddNode {
         assert_eq!(x.len(), y.len());
-        let mut xs = Vec::with_capacity(x.len());
-        let mut ys = Vec::with_capacity(y.len());
-        for (&xi, &yi) in x.iter().zip(y.iter()) {
-            xs.push(
-                self.must_node(
-                    unsafe { Cudd_bddIthVar(self.mgr, xi as i32) },
-                    "Cudd_bddIthVar(x)",
-                )
-                .as_ptr(),
-            );
-            ys.push(
-                self.must_node(
-                    unsafe { Cudd_bddIthVar(self.mgr, yi as i32) },
-                    "Cudd_bddIthVar(y)",
-                )
-                .as_ptr(),
-            );
-        }
+        let map = self.get_or_build_swap_map(x, y);
         let n = self.must_node(
-            unsafe {
-                Cudd_addSwapVariables(
-                    self.mgr,
-                    f.0.as_ptr(),
-                    xs.as_mut_ptr(),
-                    ys.as_mut_ptr(),
-                    x.len() as i32,
-                )
-            },
-            "Cudd_addSwapVariables",
+            unsafe { Sylvan_mtbdd_compose(f.0.raw(), map.raw()) },
+            "Sylvan_mtbdd_compose",
         );
         self.ref_node(n);
         self.deref_node(f.0);
@@ -562,31 +789,27 @@ impl RefManager {
     ///
     /// Equivalent to sum_abstract((a * b), z) but more efficient.
     ///
-    /// _Refs_: result\
-    /// _Derefs_: a, b
+    /// __Refs__: result\
+    /// __Derefs__: a, b
     pub fn add_matrix_multiply(&mut self, a: AddNode, b: AddNode, z: &[u16]) -> AddNode {
-        let mut z_vars = Vec::with_capacity(z.len());
-        for &zi in z {
-            z_vars.push(
-                self.must_node(
-                    unsafe { Cudd_bddIthVar(self.mgr, zi as i32) },
-                    "Cudd_bddIthVar(z)",
-                )
-                .as_ptr(),
-            );
-        }
+        let vars = self.get_or_build_var_set_from_indices(z);
 
+        self.add_matrix_multiply_with_var_set(a, b, vars)
+    }
+
+    /// Computes ADD matrix-vector/matrix multiplication over precomputed var set.
+    ///
+    /// __Refs__: result\
+    /// __Derefs__: a, b
+    pub fn add_matrix_multiply_with_var_set(
+        &mut self,
+        a: AddNode,
+        b: AddNode,
+        vars: Node,
+    ) -> AddNode {
         let n = self.must_node(
-            unsafe {
-                Cudd_addMatrixMultiply(
-                    self.mgr,
-                    a.0.as_ptr(),
-                    b.0.as_ptr(),
-                    z_vars.as_mut_ptr(),
-                    z.len() as i32,
-                )
-            },
-            "Cudd_addMatrixMultiply",
+            unsafe { Sylvan_mtbdd_and_abstract_plus(a.0.raw(), b.0.raw(), vars.raw()) },
+            "Sylvan_mtbdd_and_abstract_plus",
         );
         self.ref_node(n);
         self.deref_node(a.0);
@@ -594,12 +817,53 @@ impl RefManager {
         AddNode(n)
     }
 
+    /// Returns an internal cached variable-set node for `vars`.
+    pub fn get_var_set_for_indices(&mut self, vars: &[u16]) -> Node {
+        self.get_or_build_var_set_from_indices(vars)
+    }
+
+    /// Returns an internal cached swap-map node for `(x, y)`.
+    pub fn get_swap_map_for_indices(&mut self, x: &[u16], y: &[u16]) -> Node {
+        self.get_or_build_swap_map(x, y)
+    }
+
+    /// Composes BDD `f` with precomputed map `map`.
+    ///
+    /// __Refs__: result\
+    /// __Derefs__: f
+    pub fn bdd_compose_with_map(&mut self, f: BddNode, map: Node) -> BddNode {
+        let n = self.must_node(
+            unsafe { Sylvan_compose(f.0.raw(), map.raw()) },
+            "Sylvan_compose",
+        );
+        self.ref_node(n);
+        self.deref_node(f.0);
+        BddNode(n)
+    }
+
+    /// Composes ADD `f` with precomputed map `map`.
+    ///
+    /// __Refs__: result\
+    /// __Derefs__: f
+    pub fn add_compose_with_map(&mut self, f: AddNode, map: Node) -> AddNode {
+        let n = self.must_node(
+            unsafe { Sylvan_mtbdd_compose(f.0.raw(), map.raw()) },
+            "Sylvan_mtbdd_compose",
+        );
+        self.ref_node(n);
+        self.deref_node(f.0);
+        AddNode(n)
+    }
+
     /// Pointwise ADD addition of `a` and `b`.
     ///
-    /// _Refs_: result\
-    /// _Derefs_: a, b
+    /// __Refs__: result\
+    /// __Derefs__: a, b
     pub fn add_plus(&mut self, a: AddNode, b: AddNode) -> AddNode {
-        let n = self.add_apply(add_plus_op, a.0, b.0, "Cudd_addPlus");
+        let n = self.must_node(
+            unsafe { Sylvan_mtbdd_plus(a.0.raw(), b.0.raw()) },
+            "Sylvan_mtbdd_plus",
+        );
         self.ref_node(n);
         self.deref_node(a.0);
         self.deref_node(b.0);
@@ -608,10 +872,13 @@ impl RefManager {
 
     /// Pointwise ADD subtraction `a - b`.
     ///
-    /// _Refs_: result\
-    /// _Derefs_: a, b
+    /// __Refs__: result\
+    /// __Derefs__: a, b
     pub fn add_minus(&mut self, a: AddNode, b: AddNode) -> AddNode {
-        let n = self.add_apply(add_minus_op, a.0, b.0, "Cudd_addMinus");
+        let n = self.must_node(
+            unsafe { Sylvan_mtbdd_minus(a.0.raw(), b.0.raw()) },
+            "Sylvan_mtbdd_minus",
+        );
         self.ref_node(n);
         self.deref_node(a.0);
         self.deref_node(b.0);
@@ -620,10 +887,13 @@ impl RefManager {
 
     /// Pointwise ADD multiplication of `a` and `b`.
     ///
-    /// _Refs_: result\
-    /// _Derefs_: a, b
+    /// __Refs__: result\
+    /// __Derefs__: a, b
     pub fn add_times(&mut self, a: AddNode, b: AddNode) -> AddNode {
-        let n = self.add_apply(add_times_op, a.0, b.0, "Cudd_addTimes");
+        let n = self.must_node(
+            unsafe { Sylvan_mtbdd_times(a.0.raw(), b.0.raw()) },
+            "Sylvan_mtbdd_times",
+        );
         self.ref_node(n);
         self.deref_node(a.0);
         self.deref_node(b.0);
@@ -632,10 +902,14 @@ impl RefManager {
 
     /// Pointwise ADD division `a / b`.
     ///
-    /// _Refs_: result\
-    /// _Derefs_: a, b
+    /// __Refs__: result\
+    /// __Derefs__: a, b
     pub fn add_divide(&mut self, a: AddNode, b: AddNode) -> AddNode {
-        let n = self.add_apply(add_divide_op, a.0, b.0, "Cudd_addDivide");
+        let op: MTBDD_APPLY_OP = mtbdd_divide_op;
+        let n = self.must_node(
+            unsafe { sylvan_sys::mtbdd::Sylvan_mtbdd_apply(a.0.raw(), b.0.raw(), op) },
+            "Sylvan_mtbdd_apply(divide)",
+        );
         self.ref_node(n);
         self.deref_node(a.0);
         self.deref_node(b.0);
@@ -644,28 +918,20 @@ impl RefManager {
 
     /// ADD `if-then-else` over `cond`, converting the condition from BDD to ADD.
     ///
-    /// _Refs_: result\
-    /// _Derefs_: cond, then_branch, else_branch
+    /// __Refs__: result\
+    /// __Derefs__: cond, then_branch, else_branch
     pub fn add_ite(
         &mut self,
         cond: BddNode,
         then_branch: AddNode,
         else_branch: AddNode,
     ) -> AddNode {
-        let cond_add = self.bdd_to_add(cond);
         let n = self.must_node(
-            unsafe {
-                Cudd_addIte(
-                    self.mgr,
-                    cond_add.0.as_ptr(),
-                    then_branch.0.as_ptr(),
-                    else_branch.0.as_ptr(),
-                )
-            },
-            "Cudd_addIte",
+            unsafe { Sylvan_mtbdd_ite(cond.0.raw(), then_branch.0.raw(), else_branch.0.raw()) },
+            "Sylvan_mtbdd_ite",
         );
         self.ref_node(n);
-        self.deref_node(cond_add.0);
+        self.deref_node(cond.0);
         self.deref_node(then_branch.0);
         self.deref_node(else_branch.0);
         AddNode(n)
@@ -673,12 +939,14 @@ impl RefManager {
 
     /// Existential abstraction over ADD `f` with respect to `cube`.
     ///
-    /// _Refs_: result\
-    /// _Derefs_: f
+    /// __Refs__: result\
+    /// __Derefs__: f
     pub fn add_sum_abstract(&mut self, f: AddNode, cube: AddNode) -> AddNode {
+        let vars = self.get_or_build_cube_set(cube.0);
+
         let n = self.must_node(
-            unsafe { Cudd_addExistAbstract(self.mgr, f.0.as_ptr(), cube.0.as_ptr()) },
-            "Cudd_addExistAbstract",
+            unsafe { Sylvan_mtbdd_abstract_plus(f.0.raw(), vars.raw()) },
+            "Sylvan_mtbdd_abstract_plus",
         );
         self.ref_node(n);
         self.deref_node(f.0);
@@ -689,26 +957,22 @@ impl RefManager {
     ///
     /// Assumes `f` is 0/1-valued. This corresponds to max abstraction.
     ///
-    /// _Refs_: result\
-    /// _Derefs_: f
+    /// __Refs__: result\
+    /// __Derefs__: f
     pub fn add_or_abstract(&mut self, f: AddNode, cube: AddNode) -> AddNode {
-        let n = self.must_node(
-            unsafe { Cudd_addOrAbstract(self.mgr, f.0.as_ptr(), cube.0.as_ptr()) },
-            "Cudd_addOrAbstract",
-        );
-        self.ref_node(n);
-        self.deref_node(f.0);
-        AddNode(n)
+        self.add_max_abstract(f, cube)
     }
 
     /// Max abstraction over ADD `f` with respect to `cube`.
     ///
-    /// _Refs_: result\
-    /// _Derefs_: f
+    /// __Refs__: result\
+    /// __Derefs__: f
     pub fn add_max_abstract(&mut self, f: AddNode, cube: AddNode) -> AddNode {
+        let vars = self.get_or_build_cube_set(cube.0);
+
         let n = self.must_node(
-            unsafe { Cudd_addMaxAbstract(self.mgr, f.0.as_ptr(), cube.0.as_ptr()) },
-            "Cudd_addMaxAbstract",
+            unsafe { Sylvan_mtbdd_abstract_max(f.0.raw(), vars.raw()) },
+            "Sylvan_mtbdd_abstract_max",
         );
         self.ref_node(n);
         self.deref_node(f.0);
@@ -717,12 +981,14 @@ impl RefManager {
 
     /// Min abstraction over ADD `f` with respect to `cube`.
     ///
-    /// _Refs_: result\
-    /// _Derefs_: f
+    /// __Refs__: result\
+    /// __Derefs__: f
     pub fn add_min_abstract(&mut self, f: AddNode, cube: AddNode) -> AddNode {
+        let vars = self.get_or_build_cube_set(cube.0);
+
         let n = self.must_node(
-            unsafe { Cudd_addMinAbstract(self.mgr, f.0.as_ptr(), cube.0.as_ptr()) },
-            "Cudd_addMinAbstract",
+            unsafe { Sylvan_mtbdd_abstract_min(f.0.raw(), vars.raw()) },
+            "Sylvan_mtbdd_abstract_min",
         );
         self.ref_node(n);
         self.deref_node(f.0);
@@ -731,12 +997,12 @@ impl RefManager {
 
     /// Converts an ADD to a BDD using threshold `EPS`.
     ///
-    /// _Refs_: result\
-    /// _Derefs_: a
+    /// __Refs__: result\
+    /// __Derefs__: a
     pub fn add_to_bdd(&mut self, a: AddNode) -> BddNode {
         let n = self.must_node(
-            unsafe { Cudd_addBddThreshold(self.mgr, a.0.as_ptr(), EPS) },
-            "Cudd_addBddThreshold",
+            unsafe { Sylvan_mtbdd_strict_threshold_double(a.0.raw(), EPS) },
+            "Sylvan_mtbdd_strict_threshold_double",
         );
         self.ref_node(n);
         self.deref_node(a.0);
@@ -745,45 +1011,49 @@ impl RefManager {
 
     /// Converts an ADD to its support-pattern BDD.
     ///
-    /// _Refs_: result\
-    /// _Derefs_: a
+    /// __Refs__: result\
+    /// __Derefs__: a
     pub fn add_to_bdd_pattern(&mut self, a: AddNode) -> BddNode {
-        let n = self.must_node(
-            unsafe { Cudd_addBddPattern(self.mgr, a.0.as_ptr()) },
-            "Cudd_addBddPattern",
-        );
-        self.ref_node(n);
-        self.deref_node(a.0);
-        BddNode(n)
+        self.ref_node(a.0);
+        let zero_for_gt = self.add_const(0.0);
+        let gt_zero = self.add_greater_than(a, zero_for_gt);
+
+        let zero_for_lt = self.add_const(0.0);
+        let lt_zero = self.add_less_than(AddNode(a.0), zero_for_lt);
+        self.bdd_or(gt_zero, lt_zero)
     }
 
     /// Converts a BDD to an ADD.
     ///
-    /// _Refs_: result\
-    /// _Derefs_: b
+    /// __Refs__: result\
+    /// __Derefs__: b
     pub fn bdd_to_add(&mut self, b: BddNode) -> AddNode {
+        let one = self.add_const(1.0);
+        let zero = self.add_const(0.0);
         let n = self.must_node(
-            unsafe { Cudd_BddToAdd(self.mgr, b.0.as_ptr()) },
-            "Cudd_BddToAdd",
+            unsafe { Sylvan_mtbdd_ite(b.0.raw(), one.0.raw(), zero.0.raw()) },
+            "Sylvan_mtbdd_ite(bdd_to_add)",
         );
         self.ref_node(n);
+        self.deref_node(one.0);
+        self.deref_node(zero.0);
         self.deref_node(b.0);
         AddNode(n)
     }
 
-    /// Returns BDD for `a > b` by checking positivity of `a - b`.
+    /// Returns BDD for `a > b`.
     ///
-    /// _Refs_: result\
-    /// _Derefs_: a, b
+    /// __Refs__: result\
+    /// __Derefs__: a, b
     pub fn add_greater_than(&mut self, a: AddNode, b: AddNode) -> BddNode {
         let diff = self.add_minus(a, b);
         self.add_to_bdd(diff)
     }
 
-    /// Returns BDD for `a < b` by checking positivity of `b - a`.
+    /// Returns BDD for `a < b`.
     ///
-    /// _Refs_: result\
-    /// _Derefs_: a, b
+    /// __Refs__: result\
+    /// __Derefs__: a, b
     pub fn add_less_than(&mut self, a: AddNode, b: AddNode) -> BddNode {
         let diff = self.add_minus(b, a);
         self.add_to_bdd(diff)
@@ -791,8 +1061,8 @@ impl RefManager {
 
     /// Returns BDD for `a >= b`.
     ///
-    /// _Refs_: result\
-    /// _Derefs_: a, b
+    /// __Refs__: result\
+    /// __Derefs__: a, b
     pub fn add_greater_or_equal(&mut self, a: AddNode, b: AddNode) -> BddNode {
         let lt = self.add_less_than(a, b);
         self.bdd_not(lt)
@@ -800,8 +1070,8 @@ impl RefManager {
 
     /// Returns BDD for `a <= b`.
     ///
-    /// _Refs_: result\
-    /// _Derefs_: a, b
+    /// __Refs__: result\
+    /// __Derefs__: a, b
     pub fn add_less_or_equal(&mut self, a: AddNode, b: AddNode) -> BddNode {
         let gt = self.add_greater_than(a, b);
         self.bdd_not(gt)
@@ -809,8 +1079,8 @@ impl RefManager {
 
     /// Returns BDD for `a == b`.
     ///
-    /// _Refs_: result\
-    /// _Derefs_: a, b
+    /// __Refs__: result\
+    /// __Derefs__: a, b
     pub fn add_equals(&mut self, a: AddNode, b: AddNode) -> BddNode {
         self.ref_node(a.0);
         self.ref_node(b.0);
@@ -822,8 +1092,8 @@ impl RefManager {
 
     /// Returns BDD for `a != b`.
     ///
-    /// _Refs_: result\
-    /// _Derefs_: a, b
+    /// __Refs__: result\
+    /// __Derefs__: a, b
     pub fn add_nequals(&mut self, a: AddNode, b: AddNode) -> BddNode {
         self.ref_node(a.0);
         self.ref_node(b.0);
@@ -834,7 +1104,7 @@ impl RefManager {
 
     /// Returns `true` iff `|a-b|_inf <= tolerance`.
     pub fn add_equal_sup_norm(&self, a: AddNode, b: AddNode, tolerance: f64) -> bool {
-        unsafe { Cudd_EqualSupNorm(self.mgr, a.0.as_ptr(), b.0.as_ptr(), tolerance, 0) != 0 }
+        unsafe { Sylvan_mtbdd_equal_norm_d(a.0.raw(), b.0.raw(), tolerance) == SYLVAN_TRUE }
     }
 
     /// Numerical epsilon used for ADD->BDD thresholding and convergence checks.
@@ -844,23 +1114,34 @@ impl RefManager {
 
     /// Counts minterms in BDD `rel` over `num_vars` variables.
     ///
-    /// _Refs_: none\
-    /// _Derefs_: none
+    /// __Refs__: none\
+    /// __Derefs__: none
     pub fn bdd_count_minterms(&mut self, rel: BddNode, num_vars: u32) -> u64 {
-        unsafe { Cudd_CountMinterm(self.mgr, rel.0.as_ptr(), num_vars as i32) }.round() as u64
+        unsafe { Sylvan_mtbdd_satcount(rel.0.raw(), num_vars as usize) }.round() as u64
     }
 
     /// Returns the number of DAG nodes reachable from `root`.
     pub fn dag_size(&self, root: Node) -> usize {
         let root = self.regular_node(root);
-        unsafe { Cudd_DagSize(root.as_ptr()) as usize }
+        unsafe { Sylvan_mtbdd_nodecount(root.raw()) as usize }
     }
 
     /// Iterates all nodes reachable from `root` and invokes `f` for each.
     pub fn foreach_node<F: FnMut(Node)>(&self, root: Node, mut f: F) {
-        let root = self.regular_node(root);
-        unsafe {
-            Cudd_ForeachNode(self.mgr, root.as_ptr(), |n| f(Node(n)));
+        let mut visited: HashSet<Node> = HashSet::new();
+        let mut stack = vec![self.regular_node(root)];
+
+        while let Some(node) = stack.pop() {
+            let node = self.regular_node(node);
+            if !visited.insert(node) {
+                continue;
+            }
+
+            f(node);
+            if !self.is_constant(node) {
+                stack.push(self.read_then(node));
+                stack.push(self.read_else(node));
+            }
         }
     }
 
@@ -872,7 +1153,7 @@ impl RefManager {
                 out.push(self.regular_node(n));
             }
         });
-        out.sort_by_key(|n| n.0 as usize);
+        out.sort_by_key(|n| n.0);
         out.dedup();
         out
     }
@@ -889,12 +1170,13 @@ impl RefManager {
 
     /// Computes node count, terminal count, and minterms for an ADD root.
     ///
-    /// _Refs_: none\
-    /// _Derefs_: none
+    /// __Refs__: none\
+    /// __Derefs__: none
     pub fn add_stats(&mut self, root: AddNode, num_vars: u32) -> AddStats {
         let root = self.regular_node(root.0);
         let minterms =
-            unsafe { Cudd_CountMinterm(self.mgr, root.as_ptr(), num_vars as i32) }.round() as u64;
+            unsafe { sylvan_sys::mtbdd::Sylvan_mtbdd_satcount(root.raw(), num_vars as usize) }
+                .round() as u64;
 
         AddStats {
             node_count: self.dag_size(root),
@@ -933,8 +1215,8 @@ impl RefManager {
     ///
     /// `var_names` maps representative nodes to human-readable labels.
     ///
-    /// _Refs_: none\
-    /// _Derefs_: none
+    /// __Refs__: none\
+    /// __Derefs__: none
     pub fn dump_add_dot(
         &self,
         root: AddNode,
@@ -1002,8 +1284,8 @@ impl RefManager {
 
     /// Dumps a BDD graph to Graphviz DOT format.
     ///
-    /// _Refs_: none\
-    /// _Derefs_: none
+    /// __Refs__: none\
+    /// __Derefs__: none
     pub fn dump_bdd_dot(
         &self,
         root: BddNode,
@@ -1018,11 +1300,11 @@ impl RefManager {
     /// Variable at index `i` contributes bit `2^i`.
     pub fn get_encoding(&mut self, nodes: &[Node]) -> AddNode {
         let mut result = self.add_const(0.0);
-        let add_one = self.add_const(1.0);
+        let bdd_one = self.bdd_one();
 
         for bm in 0..(1i32 << nodes.len()) {
-            self.ref_node(add_one.0);
-            let mut term = BddNode(add_one.0);
+            self.ref_node(bdd_one.0);
+            let mut term = bdd_one;
             for (i, &var) in nodes.iter().enumerate() {
                 self.ref_node(var);
                 let literal = if (bm & (1 << i)) != 0 {
@@ -1038,14 +1320,14 @@ impl RefManager {
             result = self.add_plus(result, term);
         }
 
-        self.deref_node(add_one.0);
+        self.deref_node(bdd_one.0);
         result
     }
 
     /// Normalizes `m` over `next_var_cube` with a zero-safe denominator.
     ///
-    /// _Refs_: result\
-    /// _Derefs_: m, next_var_cube
+    /// __Refs__: result\
+    /// __Derefs__: m, next_var_cube
     pub fn unif(&mut self, m: AddNode, next_var_cube: BddNode) -> AddNode {
         self.ref_node(m.0);
         self.ref_node(next_var_cube.0);
@@ -1062,7 +1344,7 @@ impl RefManager {
 }
 
 impl Default for RefManager {
-    /// Creates a manager using the same default CUDD initialization as [`RefManager::new`].
+    /// Creates a manager using the same default Sylvan initialization as [`RefManager::new`].
     fn default() -> Self {
         Self::new()
     }
@@ -1070,16 +1352,9 @@ impl Default for RefManager {
 
 impl Drop for RefManager {
     fn drop(&mut self) {
-        if !self.mgr.is_null() {
-            if ENABLE_CUDD_DEBUGCHECK_ON_DROP && !std::thread::panicking() {
-                debug_assert!(
-                    self.debug_check(),
-                    "CUDD manager failed debug check before quit"
-                );
-            }
-            unsafe { Cudd_Quit(self.mgr) };
-            self.mgr = ptr::null_mut();
-        }
+        self.clear_internal_caches();
+        release_runtime_manager();
+        let _ = self.runtime_guard.take();
     }
 }
 
