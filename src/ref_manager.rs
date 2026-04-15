@@ -165,10 +165,10 @@ fn ensure_runtime_started() {
             Sylvan_init_mt();
             Sylvan_init_mtbdd();
             Sylvan_init_bdd();
-            if let Some(granularity) = env_u32("PRISM_SYLVAN_GRANULARITY") {
-                if granularity > 0 {
-                    Sylvan_set_granularity(granularity as i32);
-                }
+            if let Some(granularity) = env_u32("PRISM_SYLVAN_GRANULARITY")
+                && granularity > 0
+            {
+                Sylvan_set_granularity(granularity as i32);
             }
 
             let _ = Sylvan_get_granularity();

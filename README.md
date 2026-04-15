@@ -19,9 +19,10 @@ Not implemented yet:
 ## Differences from Prism
 Apart from some differences in supported features (see other [docs](docs/)), there are some differences in the internal design.
 
-Here, we explicitly differentiate between BDDs and ADDs in the codebase with the BddNode and AddNode types. These wrap CUDD BDD and ADD nodes respectively. In the Prism codebase, only JDDNode is used, which internally wrap CUDD ADD nodes. BDDs are then just represented as 0-1 ADDs. This lack of type strictness is more prone to errors and likely less efficient since ADDs in CUDD do not implement complementary edges and therefore make negation more expensive.
+PRISM uses the CUDD library which has better single-threaded performance than Sylvan but does not support multi-threading. In contrast, we use Sylvan which has worse single-threaded performance but supports multi-threading and is more actively maintained.
 
-PRISM maintains its own version of CUDD within the source tree. Here, we use a patch file to make modifications to the CUDD source code, which allows us to easily pull in updates from the original CUDD repository while maintaining our changes (assuming that the files we patch do not change too much).
+Here, we explicitly differentiate between BDDs and ADDs in the codebase with the BddNode and AddNode types. These wrap sylvan BDD and ADD nodes respectively. In the Prism codebase, only JDDNode is used, which internally wrap CUDD ADD nodes. BDDs are then just represented as 0-1 ADDs. This lack of type strictness is more prone to errors and likely less efficient since ADDs in CUDD do not implement complementary edges and therefore make negation more expensive.
+
 
 ## Build and test
 ### Stable Rust

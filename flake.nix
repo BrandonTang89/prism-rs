@@ -31,9 +31,22 @@
             };
             rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
             craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
-            patchedCudd = pkgs.cudd.overrideAttrs (old: {
-              patches = (old.patches or [ ]) ++ [ ./vendor/cudd-sys/patches/cudd-add-max-min.patch ];
-            });
+            laceSrc = pkgs.fetchFromGitHub {
+              owner = "trolando";
+              repo = "lace";
+              rev = "v1.3.1";
+              hash = "sha256-zd09+URUh2rxNeNcBid/KCTQ0wgRWWGq7qQ3m1AhcCo=";
+            };
+            sylvanSrc = pkgs.fetchFromGitHub {
+              owner = "trolando";
+              repo = "sylvan";
+              rev = "v1.7.1";
+              hash = "sha256-mca0j++dt/ehLRwikmz5EUaZ6XMA8F3k4RkknR+naM8=";
+            };
+            sylvanFetchContentToolchain = pkgs.writeText "sylvan-fetchcontent-toolchain.cmake" ''
+              set(FETCHCONTENT_SOURCE_DIR_LACE "${laceSrc}" CACHE PATH "")
+              set(FETCHCONTENT_SOURCE_DIR_SYLVAN "${sylvanSrc}" CACHE PATH "")
+            '';
 
             src =
               let
@@ -45,7 +58,6 @@
                   (pkgs.lib.hasInfix "/docs/" path)
                   || (pkgs.lib.hasInfix "/tests/dtmc/" path)
                   || (pkgs.lib.hasSuffix ".md" baseName)
-                  || (pkgs.lib.hasSuffix ".patch" baseName)
                   || (pkgs.lib.hasSuffix ".prism" baseName)
                   || (pkgs.lib.hasSuffix ".prop" baseName)
                   || (pkgs.lib.hasSuffix ".lalrpop" baseName);
@@ -58,15 +70,13 @@
             commonArgs = {
               inherit src;
               strictDeps = true;
-              cargoExtraArgs = "--no-default-features";
-              nativeBuildInputs = [ pkgs.pkg-config ];
-              buildInputs = [ patchedCudd ];
-              CARGO_BUILD_RUSTFLAGS = [
-                "-L"
-                "${patchedCudd}/lib"
-                "-l"
-                "static=cudd"
+              nativeBuildInputs = [
+                pkgs.cmake
+                pkgs.git
+                pkgs.pkg-config
               ];
+              buildInputs = [ pkgs.gmp ];
+              CMAKE_TOOLCHAIN_FILE = sylvanFetchContentToolchain;
             };
 
             cargoArtifacts = craneLib.buildDepsOnly commonArgs;
@@ -90,7 +100,13 @@
       });
 
       checks = forAllSystems (args: {
-        prismulti-tests = args.craneLib.cargoTest (args.commonArgs // { inherit (args) cargoArtifacts; });
+        prismulti-tests = args.craneLib.cargoTest (
+          args.commonArgs
+          // {
+            inherit (args) cargoArtifacts;
+            RUST_TEST_THREADS = "1";
+          }
+        );
         prismulti-fmt = args.craneLib.cargoFmt { inherit (args) src; };
         prismulti-clippy = args.craneLib.cargoClippy (
           args.commonArgs
@@ -109,6 +125,7 @@
             args.pkgs.python3Packages.mypy
             args.pkgs.uv
             args.pkgs.graphviz
+            args.pkgs.git
             args.pkgs.pkg-config
             args.pkgs.gnuplot
             args.pkgs.cmake
