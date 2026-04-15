@@ -1,8 +1,8 @@
 use anyhow::Result;
-use prism_rs::analyze::analyze_dtmc;
-use prism_rs::parser::{parse_dtmc, parse_dtmc_props};
-use prism_rs::sym_check::{PropertyEvaluation, evaluate_property_at_initial_state};
-use prism_rs::symbolic_dtmc::{RefLeakReport, SymbolicDTMC};
+use prismulti::analyze::analyze_dtmc;
+use prismulti::parser::{parse_dtmc, parse_dtmc_props};
+use prismulti::sym_check::{PropertyEvaluation, evaluate_property_at_initial_state};
+use prismulti::symbolic_dtmc::{RefLeakReport, SymbolicDTMC};
 use std::collections::HashMap;
 
 fn read_file(path: &str) -> Result<String> {
@@ -23,7 +23,7 @@ fn construct_symbolic_dtmc_with_props(
     ast.properties.append(&mut properties);
 
     let info = analyze_dtmc(&mut ast, const_overrides)?;
-    Ok(prism_rs::constr_symbolic::build_symbolic_dtmc(ast, info))
+    Ok(prismulti::constr_symbolic::build_symbolic_dtmc(ast, info))
 }
 
 fn assert_close(actual: f64, expected: f64, eps: f64) {

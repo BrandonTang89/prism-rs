@@ -90,9 +90,9 @@
       });
 
       checks = forAllSystems (args: {
-        prism-rs-tests = args.craneLib.cargoTest (args.commonArgs // { inherit (args) cargoArtifacts; });
-        prism-rs-fmt = args.craneLib.cargoFmt { inherit (args) src; };
-        prism-rs-clippy = args.craneLib.cargoClippy (
+        prismulti-tests = args.craneLib.cargoTest (args.commonArgs // { inherit (args) cargoArtifacts; });
+        prismulti-fmt = args.craneLib.cargoFmt { inherit (args) src; };
+        prismulti-clippy = args.craneLib.cargoClippy (
           args.commonArgs
           // {
             inherit (args) cargoArtifacts;

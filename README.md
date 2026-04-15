@@ -1,6 +1,6 @@
-# prism-rs
+# prismulti
 
-`prism-rs` is a Rust implementation of a subset of the
+`prismulti` is a Rust implementation of a subset of the
 [PRISM](https://www.prismmodelchecker.org/) model checker.
 
 ## Current status
@@ -40,7 +40,7 @@ We also support building with Nix for easier packaging and deployment in the fut
 
 ```bash
 nix build
-./result/bin/prism-rs [options]
+./result/bin/prismulti [options]
 ```
 
 For Nix builds, we download the CUDD library from nixpkgs and then apply our patch to it.

@@ -1,14 +1,14 @@
 //! Microbenchmarks for DTMC Construction and property checking.
-//! Not really used much in favour of hyperfine benchmarks 
+//! Not really used much in favour of hyperfine benchmarks
 //! (kept around incase it becomes useful)
 use std::collections::HashMap;
 use std::time::Duration;
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, SamplingMode};
-use prism_rs::analyze::analyze_dtmc;
-use prism_rs::constr_symbolic::build_symbolic_dtmc;
-use prism_rs::parser::{parse_dtmc, parse_dtmc_props};
-use prism_rs::sym_check::{evaluate_property_at_initial_state, PropertyEvaluation};
+use criterion::{BenchmarkId, Criterion, SamplingMode, black_box, criterion_group, criterion_main};
+use prismulti::analyze::analyze_dtmc;
+use prismulti::constr_symbolic::build_symbolic_dtmc;
+use prismulti::parser::{parse_dtmc, parse_dtmc_props};
+use prismulti::sym_check::{PropertyEvaluation, evaluate_property_at_initial_state};
 
 fn read_fixture(path: &str) -> String {
     std::fs::read_to_string(path).unwrap_or_else(|e| panic!("Failed to read '{path}': {e}"))
@@ -24,7 +24,7 @@ fn make_const_overrides(entries: &[(&str, &str)]) -> HashMap<String, String> {
 fn parse_analyze_construct(
     model_source: &str,
     const_overrides: &HashMap<String, String>,
-) -> prism_rs::symbolic_dtmc::SymbolicDTMC {
+) -> prismulti::symbolic_dtmc::SymbolicDTMC {
     let mut ast = parse_dtmc(model_source).expect("Failed to parse model");
     let info = analyze_dtmc(&mut ast, const_overrides).expect("Failed to analyze model");
     build_symbolic_dtmc(ast, info)

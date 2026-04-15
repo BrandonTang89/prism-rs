@@ -1,7 +1,7 @@
 use anyhow::Result;
-use prism_rs::constr_symbolic::build_symbolic_dtmc;
-use prism_rs::parser::parse_dtmc;
-use prism_rs::symbolic_dtmc::{RefLeakReport, SymbolicDTMC};
+use prismulti::constr_symbolic::build_symbolic_dtmc;
+use prismulti::parser::parse_dtmc;
+use prismulti::symbolic_dtmc::{RefLeakReport, SymbolicDTMC};
 use std::collections::HashMap;
 
 fn read_model_file(path: &str) -> Result<String> {
@@ -14,7 +14,7 @@ fn construct_symbolic_dtmc(
     const_overrides: &HashMap<String, String>,
 ) -> Result<SymbolicDTMC> {
     let mut ast = parse_dtmc(model_str)?;
-    let info = prism_rs::analyze::analyze_dtmc(&mut ast, const_overrides)?;
+    let info = prismulti::analyze::analyze_dtmc(&mut ast, const_overrides)?;
     let symbolic_dtmc = build_symbolic_dtmc(ast, info);
     Ok(symbolic_dtmc)
 }

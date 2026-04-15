@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
 use clap::{Parser, ValueEnum};
-use prism_rs::ast::Expr;
-use prism_rs::parser::{parse_dtmc, parse_dtmc_props};
-use prism_rs::sym_check::{PropertyEvaluation, evaluate_property_at_initial_state};
+use prismulti::ast::Expr;
+use prismulti::parser::{parse_dtmc, parse_dtmc_props};
+use prismulti::sym_check::{PropertyEvaluation, evaluate_property_at_initial_state};
 use tracing::Level;
 use tracing::{debug, info};
 use tracing_subscriber::FmtSubscriber;
@@ -96,13 +96,12 @@ fn parse_prop_indices_arg(input: &str, property_count: usize) -> anyhow::Result<
 
 fn main() {
     const BANNER: &str = r#"
-            _                                  
- _ __  _ __(_)___ _ __ ___            _ __ ___ 
-| '_ \| '__| / __| '_ ` _ \   _____  | '__/ __|
-| |_) | |  | \__ \ | | | | | |_____| | |  \__ \
-| .__/|_|  |_|___/_| |_| |_|         |_|  |___/
-|_|                                            
-                                      
+            _                     _ _   _ 
+ _ __  _ __(_)___ _ __ ___  _   _| | |_(_)
+| '_ \| '__| / __| '_ ` _ \| | | | | __| |
+| |_) | |  | \__ \ | | | | | |_| | | |_| |
+| .__/|_|  |_|___/_| |_| |_|\__,_|_|\__|_|
+|_|                                                       
 "#;
     println!("{BANNER}");
 
@@ -170,7 +169,7 @@ fn main() {
                 }
             }
 
-            let info = match prism_rs::analyze::analyze_dtmc(&mut ast, &const_overrides) {
+            let info = match prismulti::analyze::analyze_dtmc(&mut ast, &const_overrides) {
                 Ok(info) => {
                     println!("Model analysis successful:");
                     println!("  Module names: {:?}", info.module_names);
@@ -200,7 +199,7 @@ fn main() {
                 }
             };
 
-            let mut symbolic_dtmc = prism_rs::constr_symbolic::build_symbolic_dtmc(ast, info);
+            let mut symbolic_dtmc = prismulti::constr_symbolic::build_symbolic_dtmc(ast, info);
 
             println!("Symbolic DTMC:\n  {}", symbolic_dtmc.describe().join("  "));
 

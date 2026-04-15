@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
-use prism_rs::analyze::analyze_dtmc;
-use prism_rs::ast::{ConstType, Expr, PathFormula, Property};
-use prism_rs::parser::{parse_dtmc, parse_dtmc_props};
+use prismulti::analyze::analyze_dtmc;
+use prismulti::ast::{ConstType, Expr, PathFormula, Property};
+use prismulti::parser::{parse_dtmc, parse_dtmc_props};
 
 #[test]
 fn parses_interspersed_const_declarations() {

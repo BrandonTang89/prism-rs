@@ -1,5 +1,5 @@
 [package]
-name = "prism-rs"
+name = "prismulti"
 version = "0.1.0"
 edition = "2024"
 

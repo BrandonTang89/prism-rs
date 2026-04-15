@@ -73,8 +73,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--binary",
-        default="target/release/prism-rs",
-        help="Path to prism-rs binary (default: target/release/prism-rs).",
+        default="target/release/prismulti",
+        help="Path to prismulti binary (default: target/release/prismulti).",
     )
     parser.add_argument(
         "--prop-file",

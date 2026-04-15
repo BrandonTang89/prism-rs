@@ -10,22 +10,24 @@
 ## Build / Tooling Facts
 - Parser generation is automatic via `build.rs` (`lalrpop::process_root()`), so grammar edits in `src/parser/parser.lalrpop` are picked up by normal Cargo builds.
 - Release profile keeps debug symbols (`[profile.release] debug = true`, `strip = "none"`) for profiling.
-- `cudd-sys` is patched to the vendored crate at `vendor/cudd-sys` via `[patch.crates-io]` in `Cargo.toml`.
-- Default feature `build-cudd` is enabled and wires to `cudd-sys/build_cudd`; disable defaults if you need to link against a system CUDD.
+- Default feature `build-sylvan` is enabled and wires to `sylvan-sys/build_sylvan` in `Cargo.toml`.
+- `sylvan-sys` builds and links static `lace`, `sylvan`, and wrapper libraries via CMake/FetchContent when `build-sylvan` is enabled.
+- Runtime tuning is env-driven in `RefManager`: `PRISM_SYLVAN_WORKERS` (default `1`), `PRISM_SYLVAN_MEMORY_CAP`, `PRISM_SYLVAN_TABLE_RATIO`, `PRISM_SYLVAN_INITIAL_RATIO`, `PRISM_SYLVAN_GRANULARITY`, `PRISM_TRACK_REFS`.
 - Sylvan/Lace runtime is process-global in our wrapper; parallel Rust test threads can deadlock/stall, so run test suites with `RUST_TEST_THREADS=1` unless runtime synchronization changes.
+- For many small/medium benchmarks in this repo, `PRISM_SYLVAN_WORKERS=1` is often fastest; parallel workers tend to help only on heavier workloads.
 - CI currently runs Cargo tests only (`.github/workflows/ci.yml`); Nix flake checks are present but commented out.
 - Toolchain is pinned via `rust-toolchain.toml`.
 
 ## Architecture (what matters when editing)
 - Main flow: `src/main.rs` -> `parser::parse_dtmc` -> `analyze::analyze_dtmc` -> `constr_symbolic::build_symbolic_dtmc` -> `reachability::compute_reachable_and_filter`.
-- Symbolic manager wrapper is `src/ref_manager.rs`; this is the single place that should call CUDD APIs directly.
+- Symbolic manager wrapper is `src/ref_manager.rs`; this is the single place that should call Sylvan APIs directly.
 - `SymbolicDTMC` owns manager roots and is responsible for deref on drop (`src/symbolic_dtmc.rs`).
 - `SymbolicDTMC` now lazily caches and owns derived BDDs via `OnceCell`: initial state, reachable set, filtered 0-1 transitions, and `(curr == next)` identity.
 - Reachability filtering and dead-end self-loop completion are centralized in `SymbolicDTMC::set_reachable_and_filter`.
 
-## CUDD Type Discipline (critical)
-- `BddNode` wraps nodes used with `Cudd_bdd*` operations.
-- `AddNode` wraps nodes used with `Cudd_add*` operations.
+## Sylvan Type Discipline (critical)
+- `BddNode` wraps nodes used with `Sylvan_*` boolean operations.
+- `AddNode` wraps nodes used with `Sylvan_mtbdd_*` numeric operations.
 - Any function that takes or returns `BddNode`/`AddNode` must include an explicit
   doc comment contract in this style:
   - `__Refs__: ...`
@@ -34,13 +36,14 @@
 - Convert explicitly when crossing APIs:
   - ADD -> BDD: `add_to_bdd` / `add_to_bdd_pattern`
   - BDD -> ADD: `bdd_to_add`
-- `Cudd_addIte` expects an ADD condition; in this repo `add_ite` accepts `BddNode` and converts internally to ADD before calling CUDD.
+- `add_ite` accepts a `BddNode` condition and uses Sylvan MTBDD ITE (`Sylvan_mtbdd_ite`) directly.
 - Abstraction helpers are explicitly separated by intent: `add_sum_abstract`, `add_or_abstract`, `add_max_abstract`, and `add_min_abstract`.
 - Numerical convergence checks use `add_equal_sup_norm(..., mgr.epsilon())` (`EPS = 1e-10`).
+- `RefManager` now internally caches cube-sets, var-sets, and swap maps for hot paths; caches are cleared during DTMC release/drop.
 
 ## Ref / Leak Checks
-- Leak check path is CUDD-based (`Cudd_CheckZeroRef`) through `RefManager::nonzero_ref_count()`.
-- `RefManager::debug_check()` wraps `Cudd_DebugCheck`; drop-time debug check is gated by `ENABLE_CUDD_DEBUGCHECK_ON_DROP`.
+- Leak check path is Sylvan-wrapper based via tracked refs in `RefManager::nonzero_ref_count()`.
+- `RefManager::debug_check()` validates tracked nodes with `Sylvan_mtbdd_test_isvalid`.
 
 ## Test Expectations You Should Not Accidentally Break
 - `tests/dtmc_sym_constr_tests.rs` asserts transition node count, terminal count, minterms, reachable states, and zero nonzero refs via `release_report()`.
