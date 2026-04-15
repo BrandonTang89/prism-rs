@@ -47,6 +47,11 @@ For Nix builds, we download the CUDD library from nixpkgs and then apply our pat
 
 For development, you can use `nix develop` to get a shell with all the relevant tools installed.
 
+## Benchmarking 
+ Benchmark controls (criterion):
+ - `PRISM_BENCH_TARGET_SECS`: override Criterion measurement time in seconds.
+ - `PRISM_BENCH_WARMUP_SECS`: override Criterion warmup time in seconds.
+
 ## Using the binary
 
 General form:

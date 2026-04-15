@@ -57,6 +57,13 @@ BENCHMARKS: tuple[Benchmark, ...] = (
         props="1,2",
         runs=3,
     ),
+    # Benchmark(
+    #     name="leader6_8_check",
+    #     model_path="tests/dtmc/leader6_8.prism",
+    #     const_overrides="L=3",
+    #     props="1,2",
+    #     runs=3,
+    # ),
 )
 
 

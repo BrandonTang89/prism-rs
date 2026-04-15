@@ -1,27 +1,17 @@
+//! Microbenchmarks for DTMC Construction and property checking.
+//! Not really used much in favour of hyperfine benchmarks 
+//! (kept around incase it becomes useful)
 use std::collections::HashMap;
 use std::time::Duration;
 
-use criterion::{BenchmarkId, Criterion, SamplingMode, black_box, criterion_group, criterion_main};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, SamplingMode};
 use prism_rs::analyze::analyze_dtmc;
 use prism_rs::constr_symbolic::build_symbolic_dtmc;
 use prism_rs::parser::{parse_dtmc, parse_dtmc_props};
-use prism_rs::sym_check::{PropertyEvaluation, evaluate_property_at_initial_state};
+use prism_rs::sym_check::{evaluate_property_at_initial_state, PropertyEvaluation};
 
 fn read_fixture(path: &str) -> String {
     std::fs::read_to_string(path).unwrap_or_else(|e| panic!("Failed to read '{path}': {e}"))
-}
-
-fn normalize_untyped_int_consts(model_source: &str) -> String {
-    model_source
-        .replace("const N =", "const int N =")
-        .replace("const K =", "const int K =")
-}
-
-fn full_bench_profile() -> bool {
-    matches!(
-        std::env::var("PRISM_BENCH_PROFILE").ok().as_deref(),
-        Some("full")
-    )
 }
 
 fn make_const_overrides(entries: &[(&str, &str)]) -> HashMap<String, String> {
@@ -70,20 +60,16 @@ fn parse_analyze_construct_and_check(
 }
 
 fn construction_benchmarks(c: &mut Criterion) {
-    let full = full_bench_profile();
     let brp_model = read_fixture("tests/dtmc/brp.prism");
     let leader3_2_model = read_fixture("tests/dtmc/leader3_2.prism");
     let leader4_4_model = read_fixture("tests/dtmc/leader4_4.prism");
     let leader5_6_model = read_fixture("tests/dtmc/leader5_6.prism");
-    let leader6_8_model = normalize_untyped_int_consts(&read_fixture("tests/dtmc/leader6_8.prism"));
 
     let mut brp_group = c.benchmark_group("construction/brp");
     brp_group.sample_size(10);
-    if !full {
-        brp_group.sampling_mode(SamplingMode::Flat);
-    }
+    brp_group.sampling_mode(SamplingMode::Flat);
 
-    let mut brp_cases = vec![
+    let brp_cases = vec![
         (
             "N=1,MAX=2",
             make_const_overrides(&[("N", "1"), ("MAX", "2")]),
@@ -93,12 +79,6 @@ fn construction_benchmarks(c: &mut Criterion) {
             make_const_overrides(&[("N", "2"), ("MAX", "3")]),
         ),
     ];
-    if full {
-        brp_cases.push((
-            "N=3,MAX=4",
-            make_const_overrides(&[("N", "3"), ("MAX", "4")]),
-        ));
-    }
 
     for (case_name, const_overrides) in brp_cases {
         let model_source = brp_model.as_str();
@@ -117,20 +97,15 @@ fn construction_benchmarks(c: &mut Criterion) {
 
     let mut leader_group = c.benchmark_group("construction/leader");
     leader_group.sample_size(10);
-    if !full {
-        leader_group.sampling_mode(SamplingMode::Flat);
-    }
+    leader_group.sampling_mode(SamplingMode::Flat);
 
     let no_consts = make_const_overrides(&[]);
 
-    let mut leader_models = vec![
+    let leader_models = vec![
         ("leader3_2", leader3_2_model.as_str()),
         ("leader4_4", leader4_4_model.as_str()),
         ("leader5_6", leader5_6_model.as_str()),
     ];
-    if full {
-        leader_models.push(("leader6_8", leader6_8_model.as_str()));
-    }
 
     for (model_name, model_source) in leader_models {
         leader_group.bench_with_input(
@@ -149,37 +124,23 @@ fn construction_benchmarks(c: &mut Criterion) {
 }
 
 fn checking_benchmarks(c: &mut Criterion) {
-    let full = full_bench_profile();
     let brp_model = read_fixture("tests/dtmc/brp.prism");
     let brp_props = read_fixture("tests/dtmc/brp.prop");
     let leader3_2_model = read_fixture("tests/dtmc/leader3_2.prism");
     let leader4_4_model = read_fixture("tests/dtmc/leader4_4.prism");
     let leader5_6_model = read_fixture("tests/dtmc/leader5_6.prism");
-    let leader6_8_model = normalize_untyped_int_consts(&read_fixture("tests/dtmc/leader6_8.prism"));
     let leader_props = read_fixture("tests/dtmc/leader.prop");
 
     let mut brp_group = c.benchmark_group("checking/brp");
     brp_group.sample_size(10);
-    if !full {
-        brp_group.sampling_mode(SamplingMode::Flat);
-    }
+    brp_group.sampling_mode(SamplingMode::Flat);
 
-    let mut brp_cases = vec![(
+    let brp_cases = vec![(
         "N=1,MAX=2",
         make_const_overrides(&[("N", "1"), ("MAX", "2")]),
     )];
-    if full {
-        brp_cases.push((
-            "N=2,MAX=3",
-            make_const_overrides(&[("N", "2"), ("MAX", "3")]),
-        ));
-    }
 
-    let brp_property_indices: &[usize] = if full {
-        &[0, 1, 2, 3, 4, 5]
-    } else {
-        &[0, 2, 5]
-    };
+    let brp_property_indices: &[usize] = &[0, 2, 5];
 
     for (case_name, const_overrides) in brp_cases {
         for &property_index in brp_property_indices {
@@ -208,11 +169,9 @@ fn checking_benchmarks(c: &mut Criterion) {
 
     let mut leader_group = c.benchmark_group("checking/leader");
     leader_group.sample_size(10);
-    if !full {
-        leader_group.sampling_mode(SamplingMode::Flat);
-    }
+    leader_group.sampling_mode(SamplingMode::Flat);
 
-    let mut leader_cases = vec![
+    let leader_cases = vec![
         (
             "leader3_2",
             leader3_2_model.as_str(),
@@ -229,13 +188,6 @@ fn checking_benchmarks(c: &mut Criterion) {
             make_const_overrides(&[("L", "3")]),
         ),
     ];
-    if full {
-        leader_cases.push((
-            "leader6_8",
-            leader6_8_model.as_str(),
-            make_const_overrides(&[("L", "3")]),
-        ));
-    }
 
     for (case_name, model_source, const_overrides) in leader_cases {
         for property_index in [0usize, 1usize] {
@@ -278,17 +230,10 @@ fn criterion_config() -> Criterion {
             .measurement_time(Duration::from_secs(target_secs.max(1)));
     }
 
-    if full_bench_profile() {
-        Criterion::default()
-            .sample_size(10)
-            .warm_up_time(Duration::from_secs(1))
-            .measurement_time(Duration::from_secs(4))
-    } else {
-        Criterion::default()
-            .sample_size(20)
-            .warm_up_time(Duration::from_millis(500))
-            .measurement_time(Duration::from_secs(2))
-    }
+    Criterion::default()
+        .sample_size(20)
+        .warm_up_time(Duration::from_millis(500))
+        .measurement_time(Duration::from_secs(2))
 }
 
 criterion_group! {
