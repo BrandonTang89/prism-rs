@@ -73,6 +73,8 @@ fn construction_benchmarks(c: &mut Criterion) {
     let full = full_bench_profile();
     let brp_model = read_fixture("tests/dtmc/brp.prism");
     let leader3_2_model = read_fixture("tests/dtmc/leader3_2.prism");
+    let leader4_4_model = read_fixture("tests/dtmc/leader4_4.prism");
+    let leader5_6_model = read_fixture("tests/dtmc/leader5_6.prism");
     let leader6_8_model = normalize_untyped_int_consts(&read_fixture("tests/dtmc/leader6_8.prism"));
 
     let mut brp_group = c.benchmark_group("construction/brp");
@@ -121,21 +123,19 @@ fn construction_benchmarks(c: &mut Criterion) {
 
     let no_consts = make_const_overrides(&[]);
 
-    leader_group.bench_with_input(
-        BenchmarkId::new("model", "leader3_2"),
-        &leader3_2_model,
-        |b, model_source| {
-            b.iter(|| {
-                let dtmc = parse_analyze_construct(model_source, &no_consts);
-                black_box(dtmc);
-            });
-        },
-    );
-
+    let mut leader_models = vec![
+        ("leader3_2", leader3_2_model.as_str()),
+        ("leader4_4", leader4_4_model.as_str()),
+        ("leader5_6", leader5_6_model.as_str()),
+    ];
     if full {
+        leader_models.push(("leader6_8", leader6_8_model.as_str()));
+    }
+
+    for (model_name, model_source) in leader_models {
         leader_group.bench_with_input(
-            BenchmarkId::new("model", "leader6_8"),
-            &leader6_8_model,
+            BenchmarkId::new("model", model_name),
+            &model_source,
             |b, model_source| {
                 b.iter(|| {
                     let dtmc = parse_analyze_construct(model_source, &no_consts);
@@ -153,6 +153,8 @@ fn checking_benchmarks(c: &mut Criterion) {
     let brp_model = read_fixture("tests/dtmc/brp.prism");
     let brp_props = read_fixture("tests/dtmc/brp.prop");
     let leader3_2_model = read_fixture("tests/dtmc/leader3_2.prism");
+    let leader4_4_model = read_fixture("tests/dtmc/leader4_4.prism");
+    let leader5_6_model = read_fixture("tests/dtmc/leader5_6.prism");
     let leader6_8_model = normalize_untyped_int_consts(&read_fixture("tests/dtmc/leader6_8.prism"));
     let leader_props = read_fixture("tests/dtmc/leader.prop");
 
@@ -210,11 +212,23 @@ fn checking_benchmarks(c: &mut Criterion) {
         leader_group.sampling_mode(SamplingMode::Flat);
     }
 
-    let mut leader_cases = vec![(
-        "leader3_2",
-        leader3_2_model.as_str(),
-        make_const_overrides(&[("L", "3")]),
-    )];
+    let mut leader_cases = vec![
+        (
+            "leader3_2",
+            leader3_2_model.as_str(),
+            make_const_overrides(&[("L", "3")]),
+        ),
+        (
+            "leader4_4",
+            leader4_4_model.as_str(),
+            make_const_overrides(&[("L", "3")]),
+        ),
+        (
+            "leader5_6",
+            leader5_6_model.as_str(),
+            make_const_overrides(&[("L", "3")]),
+        ),
+    ];
     if full {
         leader_cases.push((
             "leader6_8",
@@ -249,16 +263,31 @@ fn checking_benchmarks(c: &mut Criterion) {
 }
 
 fn criterion_config() -> Criterion {
+    let target_secs = std::env::var("PRISM_BENCH_TARGET_SECS")
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok());
+    let warmup_secs = std::env::var("PRISM_BENCH_WARMUP_SECS")
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok());
+
+    if let Some(target_secs) = target_secs {
+        let warmup_secs = warmup_secs.unwrap_or(target_secs.max(1) / 2).max(1);
+        return Criterion::default()
+            .sample_size(30)
+            .warm_up_time(Duration::from_secs(warmup_secs))
+            .measurement_time(Duration::from_secs(target_secs.max(1)));
+    }
+
     if full_bench_profile() {
         Criterion::default()
             .sample_size(10)
             .warm_up_time(Duration::from_secs(1))
-            .measurement_time(Duration::from_secs(2))
+            .measurement_time(Duration::from_secs(4))
     } else {
         Criterion::default()
-            .sample_size(10)
-            .warm_up_time(Duration::from_millis(100))
-            .measurement_time(Duration::from_millis(250))
+            .sample_size(20)
+            .warm_up_time(Duration::from_millis(500))
+            .measurement_time(Duration::from_secs(2))
     }
 }
 
