@@ -1,6 +1,7 @@
 use sylvan_sys::MTBDD;
 use sylvan_sys::mtbdd::{Sylvan_mtbdd_protect, Sylvan_mtbdd_unprotect};
 
+#[derive(Debug)]
 pub struct ProtectedSlot {
     slot: Box<MTBDD>,
 }
@@ -45,5 +46,61 @@ impl Drop for ProtectedSlot {
         unsafe {
             Sylvan_mtbdd_unprotect(&mut *self.slot as *mut MTBDD);
         }
+    }
+}
+
+#[derive(Debug)]
+pub struct ProtectedBddSlot {
+    slot: ProtectedSlot,
+}
+
+impl ProtectedBddSlot {
+    pub fn new(initial: super::BddNode) -> Self {
+        Self {
+            slot: ProtectedSlot::new(initial.0),
+        }
+    }
+
+    #[inline]
+    pub fn get(&self) -> super::BddNode {
+        super::BddNode(self.slot.get())
+    }
+
+    #[inline]
+    pub fn set(&mut self, value: super::BddNode) {
+        self.slot.set(value.0);
+    }
+
+    #[inline]
+    pub fn replace(&mut self, value: super::BddNode) -> super::BddNode {
+        super::BddNode(self.slot.replace(value.0))
+    }
+}
+
+#[derive(Debug)]
+pub struct ProtectedAddSlot {
+    slot: ProtectedSlot,
+}
+
+impl ProtectedAddSlot {
+    pub fn new(initial: super::AddNode) -> Self {
+        Self {
+            slot: ProtectedSlot::new(initial.0),
+        }
+    }
+
+    #[inline]
+    pub fn get(&self) -> super::AddNode {
+        super::AddNode(self.slot.get())
+    }
+
+    #[inline]
+    pub fn set(&mut self, value: super::AddNode) {
+        self.slot.set(value.0);
+    }
+
+    #[inline]
+    pub fn replace(&mut self, value: super::AddNode) -> super::AddNode {
+        super::AddNode(self.slot.replace(value.0))
     }
 }

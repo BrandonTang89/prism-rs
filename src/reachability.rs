@@ -1,17 +1,22 @@
 use crate::symbolic_dtmc::SymbolicDTMC;
+use crate::{new_protected, ref_manager::local_roots_guard::LocalRootsGuard};
 use tracing::info;
 
 pub fn compute_reachable_and_filter(dtmc: &mut SymbolicDTMC) {
+    let mut guard = LocalRootsGuard::new();
     let init = dtmc.get_init_bdd();
 
-    dtmc.mgr.ref_node(init.0);
-    let mut reachable = init;
+    new_protected!(guard, reachable, init);
 
-    dtmc.mgr.ref_node(dtmc.transitions.0);
-    let trans_rel = dtmc.mgr.add_to_bdd(dtmc.transitions);
+    new_protected!(
+        guard,
+        trans_rel,
+        dtmc.mgr.add_to_bdd(dtmc.transitions.get())
+    );
     let next_to_curr_swap_map = dtmc
         .mgr
         .get_swap_map_for_indices(&dtmc.next_var_indices, &dtmc.curr_var_indices);
+    new_protected!(guard, next_to_curr_swap_map_rooted, next_to_curr_swap_map);
 
     let mut iterations = 0usize;
 
@@ -19,14 +24,12 @@ pub fn compute_reachable_and_filter(dtmc: &mut SymbolicDTMC) {
         iterations += 1;
         let old = reachable;
 
-        dtmc.mgr.ref_node(old.0);
-        dtmc.mgr.ref_node(trans_rel.0);
         let image_next = dtmc
             .mgr
-            .bdd_and_then_existsabs(old, trans_rel, dtmc.curr_var_cube);
+            .bdd_and_then_existsabs(old, trans_rel, dtmc.curr_var_cube.get());
         let image_curr = dtmc
             .mgr
-            .bdd_compose_with_map(image_next, next_to_curr_swap_map);
+            .bdd_compose_with_map(image_next, next_to_curr_swap_map_rooted);
         let new_reachable = dtmc.mgr.bdd_or(old, image_curr);
 
         reachable = new_reachable;
@@ -35,7 +38,6 @@ pub fn compute_reachable_and_filter(dtmc: &mut SymbolicDTMC) {
         }
     }
 
-    dtmc.mgr.ref_node(reachable.0);
     dtmc.set_reachable_and_filter(reachable);
 
     let reachable_states = dtmc.reachable_state_count();
@@ -43,8 +45,4 @@ pub fn compute_reachable_and_filter(dtmc: &mut SymbolicDTMC) {
         "Reachability (BFS): {} iterations, reachable states: {}",
         iterations, reachable_states
     );
-
-    dtmc.mgr.deref_node(reachable.0);
-    dtmc.mgr.deref_node(init.0);
-    dtmc.mgr.deref_node(trans_rel.0);
 }

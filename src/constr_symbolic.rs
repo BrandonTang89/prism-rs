@@ -8,6 +8,8 @@ use tracing::{debug, info, trace};
 use crate::analyze::DTMCModelInfo;
 use crate::ast::*;
 use crate::reachability::compute_reachable_and_filter;
+use crate::ref_manager::local_roots_guard::LocalRootsGuard;
+use crate::ref_manager::protected_slot::{ProtectedAddSlot, ProtectedBddSlot};
 use crate::ref_manager::{AddNode, BddNode};
 use crate::symbolic_dtmc::SymbolicDTMC;
 
@@ -15,14 +17,14 @@ use crate::symbolic_dtmc::SymbolicDTMC;
 #[derive(Debug)]
 struct SymbolicCommand {
     /// Referenced ADD for `guard * sum(prob_i * assignment_i)`.
-    transition: AddNode,
+    transition: ProtectedAddSlot,
 }
 
 /// Internal symbolic representation of a module.
 #[derive(Debug)]
 struct SymbolicModule {
     /// Referenced ADD identity relation for this module (`x' = x` for all locals).
-    ident: AddNode,
+    ident: ProtectedAddSlot,
     /// Referenced command transitions grouped by action label.
     commands_by_action: HashMap<String, Vec<SymbolicCommand>>,
 }
@@ -54,6 +56,12 @@ fn allocate_dd_vars(dtmc: &mut SymbolicDTMC) {
 
             let mgr = &mut dtmc.mgr;
             let nodes: Vec<BDD> = (0..num_bits * 2).map(|_| mgr.new_var().0).collect();
+            dtmc.var_node_roots.extend(
+                nodes
+                    .iter()
+                    .copied()
+                    .map(|node| ProtectedBddSlot::new(BddNode(node))),
+            );
             let curr_nodes: Vec<BDD> = nodes.chunks(2).map(|c| c[0]).collect();
             let next_nodes: Vec<BDD> = nodes.chunks(2).map(|c| c[1]).collect();
 
@@ -66,14 +74,19 @@ fn allocate_dd_vars(dtmc: &mut SymbolicDTMC) {
                     .insert(next, format!("{}'_{}", var_name, i));
             }
 
-            dtmc.curr_var_cube = curr_nodes.iter().fold(dtmc.curr_var_cube, |cube, &node| {
-                mgr.ref_node(node);
-                mgr.bdd_and(cube, BddNode(node))
-            });
-            dtmc.next_var_cube = next_nodes.iter().fold(dtmc.next_var_cube, |cube, &node| {
-                mgr.ref_node(node);
-                mgr.bdd_and(cube, BddNode(node))
-            });
+            let curr_cube = curr_nodes
+                .iter()
+                .fold(dtmc.curr_var_cube.get(), |cube, &node| {
+                    mgr.bdd_and(cube, BddNode(node))
+                });
+            dtmc.curr_var_cube.set(curr_cube);
+
+            let next_cube = next_nodes
+                .iter()
+                .fold(dtmc.next_var_cube.get(), |cube, &node| {
+                    mgr.bdd_and(cube, BddNode(node))
+                });
+            dtmc.next_var_cube.set(next_cube);
 
             dtmc.var_curr_nodes.insert(var_name.clone(), curr_nodes);
             dtmc.var_next_nodes.insert(var_name.clone(), next_nodes);
@@ -144,21 +157,23 @@ pub fn translate_expr(expr: &Expr, dtmc: &mut SymbolicDTMC) -> AddNode {
             )
         }
         Expr::UnaryOp { op, operand } => {
-            let value = translate_expr(operand, dtmc);
+            let mut guard = LocalRootsGuard::new();
+            crate::new_protected!(guard, value, translate_expr(operand, dtmc));
             match op {
                 UnOp::Not => {
-                    let one = dtmc.mgr.add_const(1.0);
+                    crate::new_protected!(guard, one, dtmc.mgr.add_const(1.0));
                     dtmc.mgr.add_minus(one, value)
                 }
                 UnOp::Neg => {
-                    let zero = dtmc.mgr.add_const(0.0);
+                    crate::new_protected!(guard, zero, dtmc.mgr.add_const(0.0));
                     dtmc.mgr.add_minus(zero, value)
                 }
             }
         }
         Expr::BinOp { lhs, op, rhs } => {
-            let left = translate_expr(lhs, dtmc);
-            let right = translate_expr(rhs, dtmc);
+            let mut guard = LocalRootsGuard::new();
+            crate::new_protected!(guard, left, translate_expr(lhs, dtmc));
+            crate::new_protected!(guard, right, translate_expr(rhs, dtmc));
             match op {
                 BinOp::Plus => dtmc.mgr.add_plus(left, right),
                 BinOp::Minus => dtmc.mgr.add_minus(left, right),
@@ -202,10 +217,11 @@ pub fn translate_expr(expr: &Expr, dtmc: &mut SymbolicDTMC) -> AddNode {
             then_branch,
             else_branch,
         } => {
-            let cond_expr = translate_expr(cond, dtmc);
-            let cond_add = dtmc.mgr.add_to_bdd(cond_expr);
-            let then_add = translate_expr(then_branch, dtmc);
-            let else_add = translate_expr(else_branch, dtmc);
+            let mut guard = LocalRootsGuard::new();
+            crate::new_protected!(guard, cond_expr, translate_expr(cond, dtmc));
+            crate::new_protected!(guard, cond_add, dtmc.mgr.add_to_bdd(cond_expr));
+            crate::new_protected!(guard, then_add, translate_expr(then_branch, dtmc));
+            crate::new_protected!(guard, else_add, translate_expr(else_branch, dtmc));
             dtmc.mgr.add_ite(cond_add, then_add, else_add)
         }
     }
@@ -233,7 +249,8 @@ fn translate_update(
     module_local_vars: &[String],
     dtmc: &mut SymbolicDTMC,
 ) -> AddNode {
-    let prob = translate_expr(&update.prob, dtmc);
+    let mut guard = LocalRootsGuard::new();
+    crate::new_protected!(guard, prob, translate_expr(&update.prob, dtmc));
 
     let assigned_vars: HashSet<String> = update
         .assignments
@@ -241,17 +258,21 @@ fn translate_update(
         .filter_map(|assignment| get_assign_target(assignment).map(|name| name.to_string()))
         .collect();
 
-    let symbolic_updates: Vec<AddNode> = update
+    let mut symbolic_updates: Vec<AddNode> = update
         .assignments
         .iter()
         .map(|assignment| translate_expr(assignment, dtmc))
         .collect::<Vec<_>>();
+    for symbolic_update in &mut symbolic_updates {
+        guard.protect(symbolic_update);
+    }
 
     let mgr = &mut dtmc.mgr;
     let add_one = mgr.add_const(1.0);
     let mut assign = symbolic_updates
         .iter()
         .fold(add_one, |acc, &result| mgr.add_times(acc, result));
+    guard.protect(&mut assign);
 
     for var_name in module_local_vars {
         if assigned_vars.contains(var_name) {
@@ -260,8 +281,6 @@ fn translate_update(
         let curr_nodes = dtmc.var_curr_nodes[var_name].clone();
         let next_nodes = dtmc.var_next_nodes[var_name].clone();
         for (curr, next) in curr_nodes.into_iter().zip(next_nodes.into_iter()) {
-            mgr.ref_node(curr);
-            mgr.ref_node(next);
             let eq = mgr.bdd_equals(BddNode(curr), BddNode(next));
             let eq_add = mgr.bdd_to_add(eq);
             assign = mgr.add_times(assign, eq_add);
@@ -277,36 +296,42 @@ fn translate_command(
     module_local_vars: &[String],
     dtmc: &mut SymbolicDTMC,
 ) -> SymbolicCommand {
-    let guard = translate_expr(&cmd.guard, dtmc);
-    let updates = cmd
+    let mut guard = LocalRootsGuard::new();
+    crate::new_protected!(guard, cmd_guard, translate_expr(&cmd.guard, dtmc));
+    let mut updates = cmd
         .updates
         .iter()
         .map(|update| translate_update(update, module_local_vars, dtmc))
         .collect::<Vec<_>>();
+    for update in &mut updates {
+        guard.protect(update);
+    }
 
     let mgr = &mut dtmc.mgr;
-    let updates_sum = updates
+    let mut updates_sum = updates
         .iter()
         .fold(mgr.add_zero(), |acc, &update| mgr.add_plus(acc, update));
-    let transition = mgr.add_times(guard, updates_sum);
-    SymbolicCommand { transition }
+    guard.protect(&mut updates_sum);
+    let transition = mgr.add_times(cmd_guard, updates_sum);
+    SymbolicCommand {
+        transition: ProtectedAddSlot::new(transition),
+    }
 }
 
 /// Translate one module into identity and per-action command transitions.
 fn translate_module(module: &Module, dtmc: &mut SymbolicDTMC) -> SymbolicModule {
+    let mut guard = LocalRootsGuard::new();
     let module_local_vars = module
         .local_vars
         .iter()
         .map(|v| v.name.clone())
         .collect::<Vec<_>>();
 
-    let mut ident = dtmc.mgr.bdd_one();
+    crate::new_protected!(guard, ident, dtmc.mgr.bdd_one());
     for var_name in module.local_vars.iter().map(|v| &v.name) {
         let curr_nodes = dtmc.var_curr_nodes[var_name].clone();
         let next_nodes = dtmc.var_next_nodes[var_name].clone();
         for (curr, next) in curr_nodes.into_iter().zip(next_nodes.into_iter()) {
-            dtmc.mgr.ref_node(curr);
-            dtmc.mgr.ref_node(next);
             let eq = dtmc.mgr.bdd_equals(BddNode(curr), BddNode(next));
             ident = dtmc.mgr.bdd_and(ident, eq);
         }
@@ -327,7 +352,7 @@ fn translate_module(module: &Module, dtmc: &mut SymbolicDTMC) -> SymbolicModule 
     }
 
     SymbolicModule {
-        ident,
+        ident: ProtectedAddSlot::new(ident),
         commands_by_action,
     }
 }
@@ -343,43 +368,35 @@ fn translate_modules(dtmc: &mut SymbolicDTMC) -> HashMap<String, SymbolicModule>
 
 /// Build and normalize the global DTMC transition ADD.
 fn translate_dtmc(dtmc: &mut SymbolicDTMC) {
+    let mut guard = LocalRootsGuard::new();
     let symbolic_modules = translate_modules(dtmc);
 
-    let mut transitions = dtmc.mgr.add_zero();
+    crate::new_protected!(guard, transitions, dtmc.mgr.add_zero());
     for (act, act_modules) in &dtmc.info.modules_of_act {
+        let mut action_guard = LocalRootsGuard::new();
         trace!("Action '{}' is part of {:?}", act, act_modules);
-        let mut act_trans = dtmc.mgr.add_const(1.0);
+        crate::new_protected!(action_guard, act_trans, dtmc.mgr.add_const(1.0));
 
         for module_name in dtmc.ast.modules.iter().map(|m| &m.name) {
             if act_modules.contains(module_name) {
-                let mut act_mod_trans = dtmc.mgr.add_zero();
+                let mut module_guard = LocalRootsGuard::new();
+                crate::new_protected!(module_guard, act_mod_trans, dtmc.mgr.add_zero());
                 for cmd in &symbolic_modules[module_name].commands_by_action[act] {
-                    dtmc.mgr.ref_node(cmd.transition.0);
-                    act_mod_trans = dtmc.mgr.add_plus(act_mod_trans, cmd.transition);
+                    act_mod_trans = dtmc.mgr.add_plus(act_mod_trans, cmd.transition.get());
                 }
                 act_trans = dtmc.mgr.add_times(act_trans, act_mod_trans);
             } else {
-                let ident = symbolic_modules[module_name].ident;
-                dtmc.mgr.ref_node(ident.0);
-                act_trans = dtmc.mgr.add_times(act_trans, ident);
+                act_trans = dtmc
+                    .mgr
+                    .add_times(act_trans, symbolic_modules[module_name].ident.get());
             }
         }
 
         transitions = dtmc.mgr.add_plus(transitions, act_trans);
     }
 
-    for module in symbolic_modules.values() {
-        dtmc.mgr.deref_node(module.ident.0);
-        for cmds in module.commands_by_action.values() {
-            for cmd in cmds {
-                dtmc.mgr.deref_node(cmd.transition.0);
-            }
-        }
-    }
-
-    transitions = dtmc.mgr.unif(transitions, dtmc.next_var_cube);
-    dtmc.mgr.deref_node(dtmc.transitions.0);
-    dtmc.transitions = transitions;
+    transitions = dtmc.mgr.unif(transitions, dtmc.next_var_cube.get());
+    dtmc.transitions.replace(transitions);
 }
 
 /// Top-level symbolic DTMC construction pipeline.

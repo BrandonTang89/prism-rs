@@ -13,6 +13,7 @@ use tracing::{debug, info, trace};
 
 use crate::ast::{Expr, PathFormula, Property};
 use crate::constr_symbolic::translate_expr;
+use crate::ref_manager::local_roots_guard::LocalRootsGuard;
 use crate::ref_manager::{AddNode, BddNode};
 use crate::symbolic_dtmc::SymbolicDTMC;
 
@@ -40,30 +41,37 @@ fn evaluate_add_in_initial_state(dtmc: &mut SymbolicDTMC, values: AddNode) -> f6
         .mgr
         .extract_leftmost_path_from_bdd(init)
         .expect("initial-state BDD must be satisfiable");
-    dtmc.mgr.deref_node(init.0);
 
-    let out = dtmc.mgr.add_eval_value(values, &inputs);
-    dtmc.mgr.deref_node(values.0);
-    out
+    dtmc.mgr.add_eval_value(values, &inputs)
 }
 
 /// Computes the probability ADD for `P=? [X phi]`.
 /// __Refs__: result\
 /// __Derefs__: none
 fn check_next_probability_add(dtmc: &mut SymbolicDTMC, phi: &Expr) -> AddNode {
+    let mut guard = LocalRootsGuard::new();
     let phi_bdd = state_formula_to_bdd(dtmc, phi);
-    let phi_add = dtmc.mgr.bdd_to_add(phi_bdd);
-    let curr_to_next_swap_map = dtmc
-        .mgr
-        .get_swap_map_for_indices(&dtmc.curr_var_indices, &dtmc.next_var_indices);
-    let phi_next = dtmc
-        .mgr
-        .add_compose_with_map(phi_add, curr_to_next_swap_map);
-    let next_var_set = dtmc.mgr.get_var_set_for_indices(&dtmc.next_var_indices);
+    crate::new_protected!(guard, phi_add, dtmc.mgr.bdd_to_add(phi_bdd));
+    crate::new_protected!(
+        guard,
+        curr_to_next_swap_map,
+        dtmc.mgr
+            .get_swap_map_for_indices(&dtmc.curr_var_indices, &dtmc.next_var_indices)
+    );
+    crate::new_protected!(
+        guard,
+        phi_next,
+        dtmc.mgr
+            .add_compose_with_map(phi_add, curr_to_next_swap_map)
+    );
+    crate::new_protected!(
+        guard,
+        next_var_set,
+        dtmc.mgr.get_var_set_for_indices(&dtmc.next_var_indices)
+    );
 
-    dtmc.mgr.ref_node(dtmc.transitions.0);
     dtmc.mgr
-        .add_matrix_multiply_with_var_set(dtmc.transitions, phi_next, next_var_set)
+        .add_matrix_multiply_with_var_set(dtmc.transitions.get(), phi_next, next_var_set)
 }
 
 /// Computes the probability ADD for `P=? [phi1 U<=k phi2]`.\
@@ -76,12 +84,12 @@ fn check_bounded_until_probability_add(
     k: u32,
 ) -> AddNode {
     info!("Checking bounded until with bound k={}", k);
+    let mut guard = LocalRootsGuard::new();
 
     let phi1_bdd = state_formula_to_bdd(dtmc, phi1);
     let phi2_bdd = state_formula_to_bdd(dtmc, phi2);
 
-    dtmc.mgr.ref_node(phi2_bdd.0);
-    let s_yes_add = dtmc.mgr.bdd_to_add(phi2_bdd);
+    crate::new_protected!(guard, s_yes_add, dtmc.mgr.bdd_to_add(phi2_bdd));
 
     let not_phi2 = dtmc.mgr.bdd_not(phi2_bdd);
     let phi1_and_not_phi2 = dtmc.mgr.bdd_and(phi1_bdd, not_phi2);
@@ -90,48 +98,66 @@ fn check_bounded_until_probability_add(
     let s_question = dtmc.mgr.bdd_and(reachable, phi1_and_not_phi2);
     let s_question_add = dtmc.mgr.bdd_to_add(s_question);
 
-    dtmc.mgr.ref_node(dtmc.transitions.0);
-    let t_question = dtmc.mgr.add_times(s_question_add, dtmc.transitions);
-    let curr_to_next_swap_map = dtmc
-        .mgr
-        .get_swap_map_for_indices(&dtmc.curr_var_indices, &dtmc.next_var_indices);
-    let next_var_set = dtmc.mgr.get_var_set_for_indices(&dtmc.next_var_indices);
+    crate::new_protected!(
+        guard,
+        t_question,
+        dtmc.mgr.add_times(s_question_add, dtmc.transitions.get())
+    );
+    crate::new_protected!(
+        guard,
+        curr_to_next_swap_map,
+        dtmc.mgr
+            .get_swap_map_for_indices(&dtmc.curr_var_indices, &dtmc.next_var_indices)
+    );
+    crate::new_protected!(
+        guard,
+        next_var_set,
+        dtmc.mgr.get_var_set_for_indices(&dtmc.next_var_indices)
+    );
 
-    dtmc.mgr.ref_node(s_yes_add.0);
-    let mut res_add = AddNode(s_yes_add.0);
+    crate::new_protected!(guard, res_add, s_yes_add);
     for i in 1..=k {
+        let mut iter_guard = LocalRootsGuard::new();
         trace!("Bounded-until iteration {}/{}", i, k);
-        let renamed = dtmc
-            .mgr
-            .add_compose_with_map(res_add, curr_to_next_swap_map);
+        crate::new_protected!(
+            iter_guard,
+            renamed,
+            dtmc.mgr
+                .add_compose_with_map(res_add, curr_to_next_swap_map)
+        );
 
-        dtmc.mgr.ref_node(t_question.0);
-        let stepped = dtmc
-            .mgr
-            .add_matrix_multiply_with_var_set(t_question, renamed, next_var_set);
+        crate::new_protected!(
+            iter_guard,
+            stepped,
+            dtmc.mgr
+                .add_matrix_multiply_with_var_set(t_question, renamed, next_var_set)
+        );
 
-        dtmc.mgr.ref_node(s_yes_add.0);
-        let s_yes_term = AddNode(s_yes_add.0);
+        let s_yes_term = s_yes_add;
         res_add = dtmc.mgr.add_plus(stepped, s_yes_term);
     }
-
-    dtmc.mgr.deref_node(s_yes_add.0);
-    dtmc.mgr.deref_node(t_question.0);
     res_add
 }
 
 /// __Refs__: result\
 /// __Derefs__: a, b, init
 fn solve_jacobi(dtmc: &mut SymbolicDTMC, a: AddNode, b: AddNode, init: AddNode) -> AddNode {
-    let curr_to_next_swap_map = dtmc
-        .mgr
-        .get_swap_map_for_indices(&dtmc.curr_var_indices, &dtmc.next_var_indices);
-    let next_var_set = dtmc.mgr.get_var_set_for_indices(&dtmc.next_var_indices);
+    let mut guard = LocalRootsGuard::new();
+    crate::new_protected!(
+        guard,
+        curr_to_next_swap_map,
+        dtmc.mgr
+            .get_swap_map_for_indices(&dtmc.curr_var_indices, &dtmc.next_var_indices)
+    );
+    crate::new_protected!(
+        guard,
+        next_var_set,
+        dtmc.mgr.get_var_set_for_indices(&dtmc.next_var_indices)
+    );
 
     let identity_bdd = dtmc.get_curr_next_identity_bdd();
     let identity_add = dtmc.mgr.bdd_to_add(identity_bdd);
 
-    dtmc.mgr.ref_node(a.0);
     let a_diag = dtmc.mgr.add_times(a, identity_add);
 
     let ones = dtmc.mgr.add_const(1.0);
@@ -139,56 +165,48 @@ fn solve_jacobi(dtmc: &mut SymbolicDTMC, a: AddNode, b: AddNode, init: AddNode) 
         .mgr
         .add_matrix_multiply_with_var_set(a_diag, ones, next_var_set);
 
-    dtmc.mgr.ref_node(dtmc.next_var_cube.0);
-    let next_var_cube_add = dtmc.mgr.bdd_to_add(dtmc.next_var_cube);
+    let next_var_cube_add = AddNode(dtmc.next_var_cube.get().0);
     let d = dtmc.mgr.add_max_abstract(d, next_var_cube_add);
-    dtmc.mgr.deref_node(next_var_cube_add.0);
 
-    dtmc.mgr.ref_node(a.0);
     let neg_one = dtmc.mgr.add_const(-1.0);
     let a_neg = dtmc.mgr.add_times(a, neg_one);
 
-    dtmc.mgr.ref_node(identity_bdd.0);
     let not_identity_bdd = dtmc.mgr.bdd_not(identity_bdd);
     let not_identity_add = dtmc.mgr.bdd_to_add(not_identity_bdd);
     let a_off_diag = dtmc.mgr.add_times(a_neg, not_identity_add);
 
-    dtmc.mgr.ref_node(d.0);
-    let a_prime = dtmc.mgr.add_divide(a_off_diag, d);
+    crate::new_protected!(guard, a_prime, dtmc.mgr.add_divide(a_off_diag, d));
 
-    dtmc.mgr.ref_node(d.0);
-    let b_prime = dtmc.mgr.add_divide(b, d);
+    crate::new_protected!(guard, b_prime, dtmc.mgr.add_divide(b, d));
 
-    dtmc.mgr.deref_node(d.0);
-    dtmc.mgr.deref_node(a.0);
-
-    let mut sol = init;
+    crate::new_protected!(guard, sol, init);
     let mut iterations = 0usize;
     loop {
+        let mut iter_guard = LocalRootsGuard::new();
         iterations += 1;
-        dtmc.mgr.ref_node(sol.0);
-        let sol_next = dtmc.mgr.add_compose_with_map(sol, curr_to_next_swap_map);
+        crate::new_protected!(
+            iter_guard,
+            sol_next,
+            dtmc.mgr.add_compose_with_map(sol, curr_to_next_swap_map)
+        );
 
-        dtmc.mgr.ref_node(a_prime.0);
-        let matmul = dtmc
-            .mgr
-            .add_matrix_multiply_with_var_set(a_prime, sol_next, next_var_set);
+        crate::new_protected!(
+            iter_guard,
+            matmul,
+            dtmc.mgr
+                .add_matrix_multiply_with_var_set(a_prime, sol_next, next_var_set)
+        );
 
-        dtmc.mgr.ref_node(b_prime.0);
         let sol_prime = dtmc.mgr.add_plus(matmul, b_prime);
 
         if dtmc
             .mgr
             .add_equal_sup_norm(sol, sol_prime, dtmc.mgr.epsilon())
         {
-            dtmc.mgr.deref_node(sol.0);
-            dtmc.mgr.deref_node(a_prime.0);
-            dtmc.mgr.deref_node(b_prime.0);
             info!("Jacobi converged in {} iterations", iterations);
             return sol_prime;
         }
 
-        dtmc.mgr.deref_node(sol.0);
         sol = sol_prime;
     }
 }
@@ -196,31 +214,40 @@ fn solve_jacobi(dtmc: &mut SymbolicDTMC, a: AddNode, b: AddNode, init: AddNode) 
 /// __Refs__: result\
 /// __Derefs__: phi1, phi2
 fn prob0(dtmc: &mut SymbolicDTMC, phi1: BddNode, phi2: BddNode) -> BddNode {
-    let curr_to_next_swap_map = dtmc
-        .mgr
-        .get_swap_map_for_indices(&dtmc.curr_var_indices, &dtmc.next_var_indices);
+    let mut guard = LocalRootsGuard::new();
+    crate::new_protected!(guard, phi1_rooted, phi1);
+    crate::new_protected!(
+        guard,
+        curr_to_next_swap_map,
+        dtmc.mgr
+            .get_swap_map_for_indices(&dtmc.curr_var_indices, &dtmc.next_var_indices)
+    );
 
-    let mut sol = phi2;
+    crate::new_protected!(guard, sol, phi2);
     let mut iterations = 0usize;
 
     loop {
+        let mut iter_guard = LocalRootsGuard::new();
         iterations += 1;
 
-        dtmc.mgr.ref_node(sol.0);
-        let sol_next = dtmc.mgr.bdd_compose_with_map(sol, curr_to_next_swap_map);
+        crate::new_protected!(
+            iter_guard,
+            sol_next,
+            dtmc.mgr.bdd_compose_with_map(sol, curr_to_next_swap_map)
+        );
 
         let t_01 = dtmc.get_transitions_01();
-        let post = dtmc
-            .mgr
-            .bdd_and_then_existsabs(t_01, sol_next, dtmc.next_var_cube);
+        crate::new_protected!(
+            iter_guard,
+            post,
+            dtmc.mgr
+                .bdd_and_then_existsabs(t_01, sol_next, dtmc.next_var_cube.get())
+        );
 
-        dtmc.mgr.ref_node(phi1.0);
-        let step = dtmc.mgr.bdd_and(phi1, post);
+        crate::new_protected!(iter_guard, step, dtmc.mgr.bdd_and(phi1_rooted, post));
 
-        dtmc.mgr.ref_node(sol.0);
         let sol_prime = dtmc.mgr.bdd_or(sol, step);
 
-        dtmc.mgr.deref_node(sol.0);
         if sol_prime == sol {
             sol = sol_prime;
             break;
@@ -229,7 +256,6 @@ fn prob0(dtmc: &mut SymbolicDTMC, phi1: BddNode, phi2: BddNode) -> BddNode {
     }
 
     trace!("prob0 converged in {} iterations", iterations);
-    dtmc.mgr.deref_node(phi1.0);
 
     let reachable = dtmc.get_reachable_bdd();
     let not_sol = dtmc.mgr.bdd_not(sol);
@@ -239,34 +265,42 @@ fn prob0(dtmc: &mut SymbolicDTMC, phi1: BddNode, phi2: BddNode) -> BddNode {
 /// __Refs__: result\
 /// __Derefs__: phi1, phi2, s_no
 fn prob1(dtmc: &mut SymbolicDTMC, phi1: BddNode, phi2: BddNode, s_no: BddNode) -> BddNode {
-    let curr_to_next_swap_map = dtmc
-        .mgr
-        .get_swap_map_for_indices(&dtmc.curr_var_indices, &dtmc.next_var_indices);
+    let mut guard = LocalRootsGuard::new();
+    crate::new_protected!(
+        guard,
+        curr_to_next_swap_map,
+        dtmc.mgr
+            .get_swap_map_for_indices(&dtmc.curr_var_indices, &dtmc.next_var_indices)
+    );
 
     let not_phi2 = dtmc.mgr.bdd_not(phi2);
-    let phi1_and_not_phi2 = dtmc.mgr.bdd_and(phi1, not_phi2);
+    crate::new_protected!(guard, phi1_and_not_phi2, dtmc.mgr.bdd_and(phi1, not_phi2));
 
-    let mut sol = s_no;
+    crate::new_protected!(guard, sol, s_no);
     let mut iterations = 0usize;
 
     loop {
+        let mut iter_guard = LocalRootsGuard::new();
         iterations += 1;
 
-        dtmc.mgr.ref_node(sol.0);
-        let sol_next = dtmc.mgr.bdd_compose_with_map(sol, curr_to_next_swap_map);
+        crate::new_protected!(
+            iter_guard,
+            sol_next,
+            dtmc.mgr.bdd_compose_with_map(sol, curr_to_next_swap_map)
+        );
 
         let t_01 = dtmc.get_transitions_01();
-        let post = dtmc
-            .mgr
-            .bdd_and_then_existsabs(t_01, sol_next, dtmc.next_var_cube);
+        crate::new_protected!(
+            iter_guard,
+            post,
+            dtmc.mgr
+                .bdd_and_then_existsabs(t_01, sol_next, dtmc.next_var_cube.get())
+        );
 
-        dtmc.mgr.ref_node(phi1_and_not_phi2.0);
-        let step = dtmc.mgr.bdd_and(phi1_and_not_phi2, post);
+        crate::new_protected!(iter_guard, step, dtmc.mgr.bdd_and(phi1_and_not_phi2, post));
 
-        dtmc.mgr.ref_node(sol.0);
         let sol_prime = dtmc.mgr.bdd_or(sol, step);
 
-        dtmc.mgr.deref_node(sol.0);
         if sol_prime == sol {
             sol = sol_prime;
             break;
@@ -275,7 +309,6 @@ fn prob1(dtmc: &mut SymbolicDTMC, phi1: BddNode, phi2: BddNode, s_no: BddNode) -
     }
 
     trace!("prob1 converged in {} iterations", iterations);
-    dtmc.mgr.deref_node(phi1_and_not_phi2.0);
 
     let reachable = dtmc.get_reachable_bdd();
     let not_sol = dtmc.mgr.bdd_not(sol);
@@ -290,17 +323,14 @@ fn check_unbounded_until_probability_add(
     phi2: &Expr,
 ) -> AddNode {
     info!("Checking unbounded until");
+    let mut guard = LocalRootsGuard::new();
 
     let phi1_bdd = state_formula_to_bdd(dtmc, phi1);
     let phi2_bdd = state_formula_to_bdd(dtmc, phi2);
 
-    dtmc.mgr.ref_node(phi1_bdd.0);
-    dtmc.mgr.ref_node(phi2_bdd.0);
-    let s_no = prob0(dtmc, phi1_bdd, phi2_bdd);
-    dtmc.mgr.ref_node(s_no.0);
-    let s_yes = prob1(dtmc, phi1_bdd, phi2_bdd, s_no);
+    crate::new_protected!(guard, s_no, prob0(dtmc, phi1_bdd, phi2_bdd));
+    crate::new_protected!(guard, s_yes, prob1(dtmc, phi1_bdd, phi2_bdd, s_no));
 
-    dtmc.mgr.ref_node(s_yes.0);
     let no_or_yes = dtmc.mgr.bdd_or(s_no, s_yes); // consume s_no
     let not_no_or_yes = dtmc.mgr.bdd_not(no_or_yes);
 
@@ -309,8 +339,7 @@ fn check_unbounded_until_probability_add(
 
     let s_question_add = dtmc.mgr.bdd_to_add(s_question);
 
-    dtmc.mgr.ref_node(dtmc.transitions.0);
-    let t_question = dtmc.mgr.add_times(dtmc.transitions, s_question_add);
+    let t_question = dtmc.mgr.add_times(dtmc.transitions.get(), s_question_add);
 
     let identity_bdd = dtmc.get_curr_next_identity_bdd();
     let identity_add = dtmc.mgr.bdd_to_add(identity_bdd);
@@ -319,7 +348,6 @@ fn check_unbounded_until_probability_add(
 
     let b = dtmc.mgr.bdd_to_add(s_yes); // consume s_yes
 
-    dtmc.mgr.ref_node(b.0);
     solve_jacobi(dtmc, a, b, b)
 }
 

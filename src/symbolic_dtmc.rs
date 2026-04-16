@@ -7,7 +7,8 @@ use tracing::{error, info};
 use crate::analyze::DTMCModelInfo;
 use crate::ast::DTMCAst;
 use crate::ast::utils::init_value;
-use crate::ref_manager::{AddNode, BddNode, RefManager};
+use crate::ref_manager::protected_slot::{ProtectedAddSlot, ProtectedBddSlot};
+use crate::ref_manager::{BDDVAR, BddNode, RefManager};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RefLeakReport {
@@ -33,34 +34,37 @@ pub struct SymbolicDTMC {
     /// Variable name -> next-state DD bit nodes (LSB..MSB).
     pub var_next_nodes: HashMap<String, Vec<BDD>>,
 
+    /// Protected roots for state-variable DD nodes stored in the maps above.
+    pub var_node_roots: Vec<ProtectedBddSlot>,
+
     /// Current-state variable indices aligned with `next_var_indices`.
-    pub curr_var_indices: Vec<u16>,
+    pub curr_var_indices: Vec<BDDVAR>,
     /// Next-state variable indices aligned with `curr_var_indices`.
-    pub next_var_indices: Vec<u16>,
+    pub next_var_indices: Vec<BDDVAR>,
 
     /// DD node -> human-friendly name used in DOT output.
     pub dd_var_names: HashMap<BDD, String>,
 
     /// 0-1 ADD cube over all next-state variables.
-    pub next_var_cube: BddNode,
+    pub next_var_cube: ProtectedBddSlot,
     /// 0-1 ADD cube over all current-state variables.
-    pub curr_var_cube: BddNode,
+    pub curr_var_cube: ProtectedBddSlot,
 
     /// ADD transition relation P(s,s').
-    pub transitions: AddNode,
+    pub transitions: ProtectedAddSlot,
 
     // == Values derived after construction ==
     /// 0-1 ADD support of filtered transitions.
-    transitions_01: OnceCell<BddNode>,
+    transitions_01: OnceCell<ProtectedBddSlot>,
 
     /// Initial state over current-state variables as a 0-1 BDD.
-    init: OnceCell<BddNode>,
+    init: OnceCell<ProtectedBddSlot>,
 
     /// Cached BDD for `(curr == next)` over all state bits.
-    curr_next_identity: OnceCell<BddNode>,
+    curr_next_identity: OnceCell<ProtectedBddSlot>,
 
     /// Reachable states over current-state variables as a 0-1 BDD.
-    reachable: OnceCell<BddNode>,
+    reachable: OnceCell<ProtectedBddSlot>,
 
     /// Whether all the DD roots have been released.
     /// Set by `release_refs`
@@ -71,9 +75,14 @@ impl SymbolicDTMC {
     /// Create an empty symbolic DTMC and allocate base roots.
     pub fn new(ast: DTMCAst, info: DTMCModelInfo) -> Self {
         let mut mgr = RefManager::new();
-        let transitions = mgr.add_zero();
-        let next_var_cube = mgr.bdd_one();
-        let curr_var_cube = mgr.bdd_one();
+        let transitions_node = mgr.add_zero();
+        let transitions = ProtectedAddSlot::new(transitions_node);
+
+        let next_var_cube_node = mgr.bdd_one();
+        let next_var_cube = ProtectedBddSlot::new(next_var_cube_node);
+
+        let curr_var_cube_node = mgr.bdd_one();
+        let curr_var_cube = ProtectedBddSlot::new(curr_var_cube_node);
 
         Self {
             mgr,
@@ -81,6 +90,7 @@ impl SymbolicDTMC {
             info,
             var_curr_nodes: HashMap::new(),
             var_next_nodes: HashMap::new(),
+            var_node_roots: Vec::new(),
             curr_var_indices: Vec::new(),
             next_var_indices: Vec::new(),
             dd_var_names: HashMap::new(),
@@ -112,7 +122,7 @@ impl SymbolicDTMC {
         self.mgr.bdd_count_minterms(
             self.reachable
                 .get()
-                .cloned()
+                .map(ProtectedBddSlot::get)
                 .expect("Reachable states should be computed by now"),
             self.curr_var_indices.len() as u32,
         )
@@ -125,33 +135,11 @@ impl SymbolicDTMC {
             };
         }
 
-        self.mgr.deref_node(self.transitions.0);
-        self.mgr.deref_node(self.curr_var_cube.0);
-        self.mgr.deref_node(self.next_var_cube.0);
-
-        if let Some(init) = self.init.take() {
-            self.mgr.deref_node(init.0);
-        }
-        if let Some(reachable) = self.reachable.take() {
-            self.mgr.deref_node(reachable.0);
-        }
-        if let Some(trans_01) = self.transitions_01.take() {
-            self.mgr.deref_node(trans_01.0);
-        }
-        if let Some(identity) = self.curr_next_identity.take() {
-            self.mgr.deref_node(identity.0);
-        }
-
-        for nodes in self.var_curr_nodes.values() {
-            for &node in nodes {
-                self.mgr.deref_node(node);
-            }
-        }
-        for nodes in self.var_next_nodes.values() {
-            for &node in nodes {
-                self.mgr.deref_node(node);
-            }
-        }
+        self.init.take();
+        self.reachable.take();
+        self.transitions_01.take();
+        self.curr_next_identity.take();
+        self.var_node_roots.clear();
 
         self.mgr.clear_internal_caches();
 
@@ -177,14 +165,19 @@ impl SymbolicDTMC {
             ));
         }
 
-        desc.push(format!("Transitions ADD node ID: {:?}\n", self.transitions));
+        desc.push(format!(
+            "Transitions ADD node ID: {:?}\n",
+            self.transitions.get()
+        ));
         desc.push(format!(
             "Transitions 0-1 ADD node ID: {:?}\n",
-            self.transitions_01.get()
+            self.transitions_01.get().map(ProtectedBddSlot::get)
         ));
 
         let (curr_bits, next_bits) = self.state_variable_counts();
-        let stats = self.mgr.add_stats(self.transitions, curr_bits + next_bits);
+        let stats = self
+            .mgr
+            .add_stats(self.transitions.get(), curr_bits + next_bits);
         desc.push(format!(
             "Num Nodes ADD: {}, Num Terminals: {}, Transitions(minterms): {}\n",
             stats.node_count, stats.terminal_count, stats.minterms
@@ -210,15 +203,13 @@ impl SymbolicDTMC {
     /// __Refs__: result \
     /// __Derefs__: None
     pub fn get_curr_next_identity_bdd(&mut self) -> BddNode {
-        if let Some(identity) = self.curr_next_identity.get().cloned() {
-            self.mgr.ref_node(identity.0);
-            return identity;
+        if let Some(identity) = self.curr_next_identity.get() {
+            return identity.get();
         }
 
         let identity = self.build_identity_transition_bdd();
-        self.mgr.ref_node(identity.0);
         self.curr_next_identity
-            .set(identity)
+            .set(ProtectedBddSlot::new(identity))
             .expect("Current/next identity BDD should only be set once");
         identity
     }
@@ -240,7 +231,6 @@ impl SymbolicDTMC {
                 let encoded = (init_val - lo) as u32;
                 let curr_nodes = self.var_curr_nodes[&var_name].clone();
                 for (i, bit) in curr_nodes.into_iter().enumerate() {
-                    self.mgr.ref_node(bit);
                     let lit = if (encoded & (1u32 << i)) != 0 {
                         BddNode(bit)
                     } else {
@@ -263,15 +253,13 @@ impl SymbolicDTMC {
     /// __Refs__: result\
     /// __Derefs__: None
     pub fn get_init_bdd(&mut self) -> BddNode {
-        if let Some(init) = self.init.get().cloned() {
-            self.mgr.ref_node(init.0);
-            return init;
+        if let Some(init) = self.init.get() {
+            return init.get();
         }
 
         let init = self.build_init_bdd();
-        self.mgr.ref_node(init.0);
         self.init
-            .set(init)
+            .set(ProtectedBddSlot::new(init))
             .expect("Initial-state BDD should only be set once");
         init
     }
@@ -289,28 +277,25 @@ impl SymbolicDTMC {
             "Transitions 0-1 should be set based on reachable states"
         );
         self.reachable
-            .set(reachable)
+            .set(ProtectedBddSlot::new(reachable))
             .expect("Reachable states should only be set once");
 
         // Filter the transition relation
-        self.mgr.ref_node(reachable.0);
         let reachable_add = self.mgr.bdd_to_add(reachable);
-        let old_transitions = self.transitions;
-        self.transitions = self.mgr.add_times(old_transitions, reachable_add);
+        let old_transitions = self.transitions.get();
+        self.transitions
+            .set(self.mgr.add_times(old_transitions, reachable_add));
 
         // Filter the 0-1 transition relation
-        self.mgr.ref_node(self.transitions.0);
-        let filtered_01 = self.mgr.add_to_bdd(self.transitions);
+        let filtered_01 = self.mgr.add_to_bdd(self.transitions.get());
 
         // Add self-loops to dead-end states
-        self.mgr.ref_node(filtered_01.0);
         let out_curr = self
             .mgr
-            .bdd_exists_abstract(filtered_01, self.next_var_cube);
+            .bdd_exists_abstract(filtered_01, self.next_var_cube.get());
 
         let not_out_curr = self.mgr.bdd_not(out_curr);
 
-        self.mgr.ref_node(reachable.0);
         let dead_end_curr = self.mgr.bdd_and(reachable, not_out_curr);
 
         let dead_end_count = self
@@ -319,52 +304,46 @@ impl SymbolicDTMC {
 
         if dead_end_count > 0 {
             let curr_next_eq = self.get_curr_next_identity_bdd();
-            self.mgr.ref_node(dead_end_curr.0);
             let self_loops = self.mgr.bdd_and(dead_end_curr, curr_next_eq);
 
             // Set transitions_01 to include self-loops on dead-end states
             // consume filtered_01
-            self.mgr.ref_node(self_loops.0);
             self.transitions_01
-                .set(self.mgr.bdd_or(filtered_01, self_loops))
+                .set(ProtectedBddSlot::new(
+                    self.mgr.bdd_or(filtered_01, self_loops),
+                ))
                 .expect("Transitions 0-1 should only be set once");
 
             // Set transitions to include self-loops on dead-end states
             let self_loops_add = self.mgr.bdd_to_add(self_loops);
-            let original_trans = self.transitions;
-            self.transitions = self.mgr.add_plus(original_trans, self_loops_add);
+            let original_trans = self.transitions.get();
+            self.transitions
+                .set(self.mgr.add_plus(original_trans, self_loops_add));
         } else {
             self.transitions_01
-                .set(filtered_01)
+                .set(ProtectedBddSlot::new(filtered_01))
                 .expect("Transitions 0-1 should only be set once"); // own filtered_01
         }
 
         info!("Added self-loops to {} dead-end states", dead_end_count);
-        self.mgr.deref_node(dead_end_curr.0);
     }
 
     /// __Refs__: result\
     /// __Derefs__: None
     pub fn get_reachable_bdd(&mut self) -> BddNode {
-        let reachable = self
-            .reachable
+        self.reachable
             .get()
-            .cloned()
-            .expect("Reachable states should be computed by now");
-        self.mgr.ref_node(reachable.0);
-        reachable
+            .map(ProtectedBddSlot::get)
+            .expect("Reachable states should be computed by now")
     }
 
     /// __Refs__: result\
     /// __Derefs__: None
     pub fn get_transitions_01(&mut self) -> BddNode {
-        let trans_01 = self
-            .transitions_01
+        self.transitions_01
             .get()
-            .cloned()
-            .expect("Transitions 0-1 should be set based on reachable states");
-        self.mgr.ref_node(trans_01.0);
-        trans_01
+            .map(ProtectedBddSlot::get)
+            .expect("Transitions 0-1 should be set based on reachable states")
     }
 }
 
