@@ -1,12 +1,13 @@
 use std::cell::OnceCell;
 use std::collections::HashMap;
 
+use sylvan_sys::BDD;
 use tracing::{error, info};
 
 use crate::analyze::DTMCModelInfo;
 use crate::ast::DTMCAst;
 use crate::ast::utils::init_value;
-use crate::ref_manager::{AddNode, BddNode, Node, RefManager};
+use crate::ref_manager::{AddNode, BddNode, RefManager};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RefLeakReport {
@@ -28,9 +29,9 @@ pub struct SymbolicDTMC {
     pub info: DTMCModelInfo,
 
     /// Variable name -> current-state DD bit nodes (LSB..MSB).
-    pub var_curr_nodes: HashMap<String, Vec<Node>>,
+    pub var_curr_nodes: HashMap<String, Vec<BDD>>,
     /// Variable name -> next-state DD bit nodes (LSB..MSB).
-    pub var_next_nodes: HashMap<String, Vec<Node>>,
+    pub var_next_nodes: HashMap<String, Vec<BDD>>,
 
     /// Current-state variable indices aligned with `next_var_indices`.
     pub curr_var_indices: Vec<u16>,
@@ -38,7 +39,7 @@ pub struct SymbolicDTMC {
     pub next_var_indices: Vec<u16>,
 
     /// DD node -> human-friendly name used in DOT output.
-    pub dd_var_names: HashMap<Node, String>,
+    pub dd_var_names: HashMap<BDD, String>,
 
     /// 0-1 ADD cube over all next-state variables.
     pub next_var_cube: BddNode,
