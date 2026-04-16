@@ -1,0 +1,49 @@
+use sylvan_sys::MTBDD;
+use sylvan_sys::mtbdd::{Sylvan_mtbdd_protect, Sylvan_mtbdd_unprotect};
+
+pub struct ProtectedSlot {
+    slot: Box<MTBDD>,
+}
+
+impl ProtectedSlot {
+    pub fn new(initial: MTBDD) -> Self {
+        let mut slot = Box::new(initial);
+        unsafe {
+            Sylvan_mtbdd_protect(&mut *slot as *mut MTBDD);
+        }
+        Self { slot }
+    }
+
+    #[inline]
+    pub fn get(&self) -> MTBDD {
+        *self.slot
+    }
+
+    #[inline]
+    pub fn set(&mut self, value: MTBDD) {
+        *self.slot = value;
+    }
+
+    #[inline]
+    pub fn replace(&mut self, value: MTBDD) -> MTBDD {
+        std::mem::replace(&mut *self.slot, value)
+    }
+
+    #[inline]
+    pub fn as_ptr(&self) -> *const MTBDD {
+        &*self.slot as *const MTBDD
+    }
+
+    #[inline]
+    pub fn as_mut_ptr(&mut self) -> *mut MTBDD {
+        &mut *self.slot as *mut MTBDD
+    }
+}
+
+impl Drop for ProtectedSlot {
+    fn drop(&mut self) {
+        unsafe {
+            Sylvan_mtbdd_unprotect(&mut *self.slot as *mut MTBDD);
+        }
+    }
+}

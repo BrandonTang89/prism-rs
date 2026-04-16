@@ -5,6 +5,8 @@
 //! centralizes `Sylvan_ref`/`Sylvan_deref` bookkeeping so call sites can work
 //! with higher-level BDD/ADD operations.
 
+pub mod local_roots_guard;
+pub mod protected_slot;
 use std::{
     collections::{HashMap, HashSet},
     env,
@@ -14,15 +16,10 @@ use std::{
 };
 
 use sylvan_sys::{
-    BDD, MTBDD, SYLVAN_FALSE, SYLVAN_INVALID, SYLVAN_TRUE,
-    bdd::{
+    BDD, MTBDD, MTBDDMAP, SYLVAN_FALSE, SYLVAN_INVALID, SYLVAN_TRUE, bdd::{
         Sylvan_and, Sylvan_and_exists, Sylvan_compose, Sylvan_equiv, Sylvan_exists,
         Sylvan_get_granularity, Sylvan_not, Sylvan_or, Sylvan_set_granularity, Sylvan_xor,
-    },
-    common::{Sylvan_init_package, Sylvan_set_limits},
-    lace::{Lace_start, Task, WorkerP},
-    mt::Sylvan_init_mt,
-    mtbdd::{
+    }, common::{Sylvan_init_package, Sylvan_set_limits}, lace::{Lace_start, Task, WorkerP}, mt::Sylvan_init_mt, mtbdd::{
         MTBDD_APPLY_OP, Sylvan_high, Sylvan_init_bdd, Sylvan_init_mtbdd, Sylvan_ithvar, Sylvan_low,
         Sylvan_map_add, Sylvan_map_empty, Sylvan_mtbdd_abstract_max, Sylvan_mtbdd_abstract_min,
         Sylvan_mtbdd_abstract_plus, Sylvan_mtbdd_and_abstract_plus, Sylvan_mtbdd_comp,
@@ -31,7 +28,7 @@ use sylvan_sys::{
         Sylvan_mtbdd_ithvar, Sylvan_mtbdd_minus, Sylvan_mtbdd_nodecount, Sylvan_mtbdd_plus,
         Sylvan_mtbdd_ref, Sylvan_mtbdd_satcount, Sylvan_mtbdd_strict_threshold_double,
         Sylvan_mtbdd_times, Sylvan_set_fromarray, Sylvan_var,
-    },
+    }
 };
 
 pub const EPS: f64 = 1e-10;
@@ -50,6 +47,7 @@ pub struct AddStats {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 /// Typed wrapper for BDD nodes.
 pub struct BddNode(pub BDD);
+pub struct ADDMap(pub MTBDDMAP);
 
 impl BddNode {
     #[inline]
@@ -729,7 +727,7 @@ impl RefManager {
     /// __Derefs__: f
     pub fn bdd_swap_variables(&mut self, f: BddNode, x: &[u16], y: &[u16]) -> BddNode {
         assert_eq!(x.len(), y.len());
-        let map = self.get_or_build_swap_map(x, y);
+        let map: MTBDDMAP = self.get_or_build_swap_map(x, y);
         let n = self.must_node(unsafe { Sylvan_compose(f.0, map) }, "Sylvan_compose");
         self.ref_node(n);
         self.deref_node(f.0);
