@@ -85,6 +85,12 @@ impl Drop for LocalRootsGuard {
     }
 }
 
+impl Default for LocalRootsGuard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[macro_export]
 macro_rules! new_protected {
     ($guard:ident, $name:ident, $expr:expr) => {

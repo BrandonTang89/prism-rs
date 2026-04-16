@@ -1,7 +1,4 @@
-use core::num;
 use std::collections::{HashMap, HashSet};
-
-use sylvan_sys::{BDD, BDDVAR};
 
 #[allow(unused_imports)]
 use tracing::{debug, info, trace};
@@ -9,9 +6,9 @@ use tracing::{debug, info, trace};
 use crate::analyze::DTMCModelInfo;
 use crate::ast::*;
 use crate::reachability::compute_reachable_and_filter;
+use crate::ref_manager::AddNode;
 use crate::ref_manager::local_roots_guard::LocalRootsGuard;
 use crate::ref_manager::protected_slot::{ProtectedAddSlot, ProtectedBddSlot};
-use crate::ref_manager::{AddNode, BddNode};
 use crate::symbolic_dtmc::SymbolicDTMC;
 
 /// Internal symbolic representation of a single command.
@@ -88,13 +85,11 @@ fn allocate_dd_vars(dtmc: &mut SymbolicDTMC) {
 
             trace!(
                 "Allocated var '{}' with curr BDD vars: {:?}",
-                var_name,
-                dtmc.curr_name_to_indices[var_name]
+                var_name, dtmc.curr_name_to_indices[var_name]
             );
             trace!(
                 "Allocated var '{}' with next BDD vars: {:?}",
-                var_name,
-                dtmc.next_name_to_indices[var_name]
+                var_name, dtmc.next_name_to_indices[var_name]
             );
         }
     }

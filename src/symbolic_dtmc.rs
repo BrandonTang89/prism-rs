@@ -1,7 +1,6 @@
 use std::cell::OnceCell;
 use std::collections::HashMap;
 
-use sylvan_sys::BDD;
 use tracing::{error, info};
 
 use crate::analyze::DTMCModelInfo;
