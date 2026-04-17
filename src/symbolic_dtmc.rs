@@ -1,7 +1,7 @@
 use std::cell::OnceCell;
 use std::collections::HashMap;
 
-use tracing::{error, info};
+use tracing::info;
 
 use crate::analyze::DTMCModelInfo;
 use crate::ast::DTMCAst;
@@ -9,15 +9,7 @@ use crate::ast::utils::init_value;
 use crate::ref_manager::protected_slot::{ProtectedAddSlot, ProtectedBddSlot, ProtectedVarSetSlot};
 use crate::ref_manager::{BDDVAR, BddNode, RefManager};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RefLeakReport {
-    pub nonzero_ref_count: usize,
-}
-
 /// Symbolic DTMC representation used by construction and analysis passes.
-///
-/// The DD manager and all DD roots are owned here so the structure can cleanly
-/// release references on drop.
 pub struct SymbolicDTMC {
     /// Decision diagram manager with reference-tracking wrappers.
     pub mgr: RefManager,
@@ -64,10 +56,6 @@ pub struct SymbolicDTMC {
 
     /// Reachable states over current-state variables as a 0-1 BDD.
     reachable: OnceCell<ProtectedBddSlot>,
-
-    /// Whether all the DD roots have been released.
-    /// Set by `release_refs`
-    released: bool,
 }
 
 impl SymbolicDTMC {
@@ -95,7 +83,6 @@ impl SymbolicDTMC {
             init: OnceCell::new(),
             reachable: OnceCell::new(),
             curr_next_identity: OnceCell::new(),
-            released: false,
         }
     }
 
@@ -128,31 +115,6 @@ impl SymbolicDTMC {
                 .expect("Reachable states should be computed by now"),
             self.curr_var_indices.len() as u32,
         )
-    }
-
-    fn release_refs(&mut self) -> RefLeakReport {
-        if self.released {
-            return RefLeakReport {
-                nonzero_ref_count: 0,
-            };
-        }
-
-        self.init.take();
-        self.reachable.take();
-        self.transitions_01.take();
-        self.curr_next_identity.take();
-        self.var_node_roots.clear();
-
-        self.mgr.clear_internal_caches();
-
-        self.released = true;
-        RefLeakReport {
-            nonzero_ref_count: self.mgr.nonzero_ref_count(),
-        }
-    }
-
-    pub fn release_report(&mut self) -> RefLeakReport {
-        self.release_refs()
     }
 
     /// Human-readable summary of transition relation statistics.
@@ -346,17 +308,5 @@ impl SymbolicDTMC {
             .get()
             .map(ProtectedBddSlot::get)
             .expect("Transitions 0-1 should be set based on reachable states")
-    }
-}
-
-impl Drop for SymbolicDTMC {
-    fn drop(&mut self) {
-        let report = self.release_refs();
-        if report.nonzero_ref_count > 0 {
-            error!(
-                "RefManager non-zero refs after owned release: {}",
-                report.nonzero_ref_count
-            );
-        }
     }
 }

@@ -1,7 +1,7 @@
 use anyhow::Result;
 use prismulti::constr_symbolic::build_symbolic_dtmc;
 use prismulti::parser::parse_dtmc;
-use prismulti::symbolic_dtmc::{RefLeakReport, SymbolicDTMC};
+use prismulti::symbolic_dtmc::SymbolicDTMC;
 use std::collections::HashMap;
 
 fn read_model_file(path: &str) -> Result<String> {
@@ -59,16 +59,6 @@ fn test_construction(
         num_reachable, expected_reachable_states,
         "Expected {} reachable states, got {}",
         expected_reachable_states, num_reachable
-    );
-
-    assert_zero_refs(symbolic_dtmc.release_report());
-}
-
-fn assert_zero_refs(report: RefLeakReport) {
-    assert_eq!(
-        report.nonzero_ref_count, 0,
-        "Expected zero non-zero refs, got {}. ",
-        report.nonzero_ref_count
     );
 }
 

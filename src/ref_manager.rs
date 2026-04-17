@@ -16,7 +16,6 @@ use std::{
 };
 
 use local_roots_guard::LocalRootsGuard;
-use protected_slot::ProtectedSlot;
 use sylvan_sys::{
     BDD, BDDMAP, BDDSET, BDDVAR as SYLVAN_BDDVAR, MTBDD, SYLVAN_FALSE, SYLVAN_INVALID, SYLVAN_TRUE,
     bdd::{
@@ -86,7 +85,6 @@ struct SylvanRuntime {
 /// Owns a Sylvan runtime handle and provides typed BDD/ADD operations.
 pub struct RefManager {
     next_var_index: BDDVAR,
-    swap_map_cache: HashMap<(Vec<BDDVAR>, Vec<BDDVAR>), ProtectedSlot>,
     runtime_guard: Option<MutexGuard<'static, ()>>,
 }
 
@@ -206,7 +204,6 @@ impl RefManager {
         ensure_runtime_started();
         Self {
             next_var_index: 0,
-            swap_map_cache: HashMap::new(),
             runtime_guard: Some(runtime_guard),
         }
     }
@@ -243,7 +240,7 @@ impl RefManager {
         VarSet(self.must_node(unsafe { Sylvan_set_empty() }, "Sylvan_set_empty"))
     }
 
-    fn build_swap_map_uncached(&self, x: &[BDDVAR], y: &[BDDVAR]) -> BddMap {
+    pub fn build_swap_map(&self, x: &[BDDVAR], y: &[BDDVAR]) -> BddMap {
         let mut guard = LocalRootsGuard::new();
 
         crate::new_protected!(
@@ -282,27 +279,6 @@ impl RefManager {
         }
 
         BddMap(map)
-    }
-
-    fn get_or_build_swap_map(&mut self, x: &[BDDVAR], y: &[BDDVAR]) -> BddMap {
-        let key = (x.to_vec(), y.to_vec());
-        if let Some(map) = self.swap_map_cache.get(&key) {
-            return BddMap(map.get());
-        }
-
-        let map = self.build_swap_map_uncached(x, y);
-        self.swap_map_cache.insert(key, ProtectedSlot::new(map.0));
-        map
-    }
-
-    /// Releases internal memoization roots that are retained by the manager.
-    pub fn clear_internal_caches(&mut self) {
-        self.swap_map_cache.clear();
-    }
-
-    /// Returns the number of nodes still carrying non-zero references.
-    pub fn nonzero_ref_count(&self) -> usize {
-        0
     }
 
     /// Returns the number of DD variables currently allocated in this manager view.
@@ -588,7 +564,7 @@ impl RefManager {
         assert_eq!(x.len(), y.len());
         let mut guard = LocalRootsGuard::new();
         crate::new_protected!(guard, f_rooted, f);
-        let map = self.get_or_build_swap_map(x, y);
+        let map = self.build_swap_map(x, y);
         crate::new_protected!(guard, map_rooted, map);
         let n = self.must_node(
             unsafe { Sylvan_compose(f_rooted.0, map_rooted.0) },
@@ -606,7 +582,7 @@ impl RefManager {
         assert_eq!(x.len(), y.len());
         let mut guard = LocalRootsGuard::new();
         crate::new_protected!(guard, f_rooted, f);
-        let map = self.get_or_build_swap_map(x, y);
+        let map = self.build_swap_map(x, y);
         crate::new_protected!(guard, map_rooted, map);
         let n = self.must_node(
             unsafe { Sylvan_mtbdd_compose(f_rooted.0, map_rooted.0) },
@@ -658,7 +634,7 @@ impl RefManager {
 
     /// Returns an internal cached swap-map node for `(x, y)`.
     pub fn get_swap_map_for_indices(&mut self, x: &[BDDVAR], y: &[BDDVAR]) -> BddMap {
-        self.get_or_build_swap_map(x, y)
+        self.build_swap_map(x, y)
     }
 
     /// Composes BDD `f` with precomputed map `map`.
@@ -1184,7 +1160,6 @@ impl Default for RefManager {
 
 impl Drop for RefManager {
     fn drop(&mut self) {
-        self.clear_internal_caches();
         release_runtime_manager();
         let _ = self.runtime_guard.take();
     }
@@ -1214,8 +1189,6 @@ mod tests {
 
         assert_eq!(witness[0], 1, "leftmost witness for x0 must set x0=1");
         assert_witness_satisfies(x0, &mut mgr, &witness);
-
-        assert_eq!(mgr.nonzero_ref_count(), 0);
     }
 
     #[test]
@@ -1233,8 +1206,6 @@ mod tests {
 
         assert_eq!(witness[0], 0, "leftmost witness for !x0 must set x0=0");
         assert_witness_satisfies(not_x0, &mut mgr, &witness);
-
-        assert_eq!(mgr.nonzero_ref_count(), 0);
     }
 
     #[test]
@@ -1257,8 +1228,6 @@ mod tests {
             (value - 0.7).abs() < 1e-12,
             "expected max value 0.7, got {value}"
         );
-
-        assert_eq!(mgr.nonzero_ref_count(), 0);
     }
 
     #[test]
@@ -1281,7 +1250,5 @@ mod tests {
             (value - 0.2).abs() < 1e-12,
             "expected min value 0.2, got {value}"
         );
-
-        assert_eq!(mgr.nonzero_ref_count(), 0);
     }
 }

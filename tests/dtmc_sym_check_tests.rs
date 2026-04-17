@@ -2,7 +2,7 @@ use anyhow::Result;
 use prismulti::analyze::analyze_dtmc;
 use prismulti::parser::{parse_dtmc, parse_dtmc_props};
 use prismulti::sym_check::{PropertyEvaluation, evaluate_property_at_initial_state};
-use prismulti::symbolic_dtmc::{RefLeakReport, SymbolicDTMC};
+use prismulti::symbolic_dtmc::SymbolicDTMC;
 use std::collections::HashMap;
 
 fn read_file(path: &str) -> Result<String> {
@@ -36,14 +36,6 @@ fn assert_close(actual: f64, expected: f64, eps: f64) {
     );
 }
 
-fn assert_zero_refs(report: RefLeakReport) {
-    assert_eq!(
-        report.nonzero_ref_count, 0,
-        "Expected zero non-zero refs, got {}.",
-        report.nonzero_ref_count
-    );
-}
-
 #[test]
 fn dtmc_knuth_die_unbounded_until_property_probability() {
     for x in 1..=6 {
@@ -69,8 +61,6 @@ fn dtmc_knuth_die_unbounded_until_property_probability() {
                 panic!("Expected probability, got {reason}")
             }
         }
-
-        assert_zero_refs(dtmc.release_report());
     }
 }
 
@@ -95,8 +85,6 @@ fn dtmc_knuth_die_next_property_probability() {
         PropertyEvaluation::Probability(value) => assert_close(value, 0.5, 1e-10),
         PropertyEvaluation::Unsupported(reason) => panic!("Expected probability, got {reason}"),
     }
-
-    assert_zero_refs(dtmc.release_report());
 }
 
 #[test]
@@ -120,8 +108,6 @@ fn dtmc_knuth_die_bounded_until_property_probability() {
         PropertyEvaluation::Probability(value) => assert_close(value, 0.75, 1e-10),
         PropertyEvaluation::Unsupported(reason) => panic!("Expected probability, got {reason}"),
     }
-
-    assert_zero_refs(dtmc.release_report());
 }
 
 #[test]
@@ -156,8 +142,6 @@ fn dtmc_knuth_two_dice_reachability_probability() {
                 panic!("Expected probability, got {reason}")
             }
         }
-
-        assert_zero_refs(dtmc.release_report());
     }
 }
 
@@ -200,8 +184,6 @@ fn dtmc_brp_property_probabilities_with_constants() {
             }
         }
     }
-
-    assert_zero_refs(dtmc.release_report());
 }
 
 #[test]
@@ -243,6 +225,4 @@ fn dtmc_leader3_2_properties_with_constants() {
             panic!("Expected unsupported reward property, got probability {value}")
         }
     }
-
-    assert_zero_refs(dtmc.release_report());
 }
