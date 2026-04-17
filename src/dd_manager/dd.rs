@@ -318,20 +318,11 @@ pub fn add_swap_vars(f: AddNode, swap_map: BddMap) -> AddNode {
     ))
 }
 
-pub fn add_matrix_multiply(a: AddNode, b: AddNode, z: &[BDDVAR]) -> AddNode {
-    crate::protected_var_set!(vars, var_set_from_indices(z));
-    add_matrix_multiply_with_var_set(a, b, vars.get())
-}
-
-pub fn add_matrix_multiply_with_var_set(a: AddNode, b: AddNode, vars: VarSet) -> AddNode {
+pub fn add_matrix_multiply(a: AddNode, b: AddNode, vars: VarSet) -> AddNode {
     AddNode(must_node(
         unsafe { Sylvan_mtbdd_and_abstract_plus(a.0, b.0, vars.0) },
         "Sylvan_mtbdd_and_abstract_plus",
     ))
-}
-
-pub fn get_var_set_for_indices(vars: &[BDDVAR]) -> VarSet {
-    var_set_from_indices(vars)
 }
 
 pub fn bdd_compose_with_map(f: BddNode, map: BddMap) -> BddNode {

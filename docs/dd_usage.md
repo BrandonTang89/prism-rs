@@ -113,6 +113,9 @@ caller must root the returned value if needed beyond immediate use.
 
 - Use `protected_local` macros for short-lived locals in expression-building
   code.
+- In iterative/hot loops, predeclare reusable `protected_local` slots before the
+  loop and update them with `.replace(...)`/`.set(...)` each iteration, instead
+  of creating new protected locals inside the loop body.
 - Use `protected_slot` for long-lived owned roots in structs.
 - Never assume a plain returned node stays alive unless you root it on the
   caller side.

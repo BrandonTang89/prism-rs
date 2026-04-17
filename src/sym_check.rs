@@ -87,17 +87,20 @@ fn check_bounded_until_probability_add(
     );
 
     protected_add!(res_add, s_yes_add.get());
+    protected_add!(renamed);
+    protected_add!(stepped);
     for i in 1..=k {
         trace!("Bounded-until iteration {}/{}", i, k);
-        protected_add!(
-            renamed,
-            dd::add_compose_with_map(res_add.get(), dtmc.curr_to_next_map.get())
-        );
+        renamed.replace(dd::add_compose_with_map(
+            res_add.get(),
+            dtmc.curr_to_next_map.get(),
+        ));
 
-        protected_add!(
-            stepped,
-            dd::add_matrix_multiply(t_question.get(), renamed.get(), dtmc.next_var_set.get())
-        );
+        stepped.replace(dd::add_matrix_multiply(
+            t_question.get(),
+            renamed.get(),
+            dtmc.next_var_set.get(),
+        ));
 
         res_add.set(dd::add_plus(stepped.get(), s_yes_add.get()));
     }
@@ -161,25 +164,29 @@ fn solve_jacobi(dtmc: &mut SymbolicDTMC, a: AddNode, b: AddNode, init: AddNode) 
 
 fn prob0(dtmc: &mut SymbolicDTMC, phi1: BddNode, phi2: BddNode) -> BddNode {
     protected_bdd!(sol, phi2);
+    protected_bdd!(sol_next, sol.get());
+    protected_bdd!(post, sol.get());
+    protected_bdd!(step, sol.get());
+    protected_bdd!(sol_prime, sol.get());
     let mut iterations = 0usize;
 
     loop {
         iterations += 1;
 
-        protected_bdd!(
-            sol_next,
-            dd::bdd_compose_with_map(sol.get(), dtmc.curr_to_next_map.get())
-        );
+        sol_next.replace(dd::bdd_compose_with_map(
+            sol.get(),
+            dtmc.curr_to_next_map.get(),
+        ));
 
-        let t_01 = dtmc.get_transitions_01();
-        protected_bdd!(
-            post,
-            dd::bdd_and_then_existsabs(t_01, sol_next.get(), dtmc.next_var_set.get())
-        );
+        post.replace(dd::bdd_and_then_existsabs(
+            dtmc.get_transitions_01(),
+            sol_next.get(),
+            dtmc.next_var_set.get(),
+        ));
 
-        protected_bdd!(step, dd::bdd_and(phi1, post.get()));
+        step.replace(dd::bdd_and(phi1, post.get()));
 
-        protected_bdd!(sol_prime, dd::bdd_or(sol.get(), step.get()));
+        sol_prime.replace(dd::bdd_or(sol.get(), step.get()));
 
         if sol_prime.get() == sol.get() {
             sol.set(sol_prime.get());
@@ -200,25 +207,29 @@ fn prob1(dtmc: &mut SymbolicDTMC, phi1: BddNode, phi2: BddNode, s_no: BddNode) -
     protected_bdd!(phi1_and_not_phi2, dd::bdd_and(phi1, not_phi2.get()));
 
     protected_bdd!(sol, s_no);
+    protected_bdd!(sol_next, sol.get());
+    protected_bdd!(post, sol.get());
+    protected_bdd!(step, sol.get());
+    protected_bdd!(sol_prime, sol.get());
     let mut iterations = 0usize;
 
     loop {
         iterations += 1;
 
-        protected_bdd!(
-            sol_next,
-            dd::bdd_compose_with_map(sol.get(), dtmc.curr_to_next_map.get())
-        );
+        sol_next.replace(dd::bdd_compose_with_map(
+            sol.get(),
+            dtmc.curr_to_next_map.get(),
+        ));
 
-        let t_01 = dtmc.get_transitions_01();
-        protected_bdd!(
-            post,
-            dd::bdd_and_then_existsabs(t_01, sol_next.get(), dtmc.next_var_set.get())
-        );
+        post.replace(dd::bdd_and_then_existsabs(
+            dtmc.get_transitions_01(),
+            sol_next.get(),
+            dtmc.next_var_set.get(),
+        ));
 
-        protected_bdd!(step, dd::bdd_and(phi1_and_not_phi2.get(), post.get()));
+        step.replace(dd::bdd_and(phi1_and_not_phi2.get(), post.get()));
 
-        protected_bdd!(sol_prime, dd::bdd_or(sol.get(), step.get()));
+        sol_prime.replace(dd::bdd_or(sol.get(), step.get()));
 
         if sol_prime.get() == sol.get() {
             sol.set(sol_prime.get());

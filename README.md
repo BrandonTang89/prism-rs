@@ -1,6 +1,6 @@
 # prismulti
 
-`prismulti` is a Rust implementation of a subset of the
+`prismulti` is a multi-threaded rust implementation of a subset of the
 [PRISM](https://www.prismmodelchecker.org/) model checker.
 
 ## Current status
@@ -21,51 +21,32 @@ Apart from some differences in supported features (see other [docs](docs/)), the
 
 PRISM uses the CUDD library which has better single-threaded performance than Sylvan but does not support multi-threading. In contrast, we use Sylvan which has worse single-threaded performance but supports multi-threading and is more actively maintained.
 
-Here, we explicitly differentiate between BDDs and ADDs in the codebase with the BddNode and AddNode types. These wrap sylvan BDD and ADD nodes respectively. In the Prism codebase, only JDDNode is used, which internally wrap CUDD ADD nodes. BDDs are then just represented as 0-1 ADDs. This lack of type strictness is more prone to errors and likely less efficient since ADDs in CUDD do not implement complementary edges and therefore make negation more expensive.
+In the Prism codebase, only JDDNode is used, which internally wrap CUDD ADD nodes. BDDs are then just represented as 0-1 ADDs. In prismulti, we explicitly differentiate between BDDs and ADDs in the codebase with the BddNode and AddNode types. These wrap sylvan BDD and ADD nodes respectively. This lack of type strictness is more prone to errors and less efficient. ADDs in Sylvan do not implement complementary edges and therefore make negation more expensive. Furthermore, operations that assume to operate on BDDs can be performed more efficiently than that same operation on ADDs, so it is important to differentiate between the two and use the correct type for the correct purpose.
 
+This type strictness is taken further by the usage of `VarSet` and `BddMap` types which represent BDD cubes and specialized Sylvan maps that are used for permuting variables efficiently in abstraction operations.
 
-## Build and test
+CUDD uses value-based reference counting, while Sylvan allows the use of pointer based protection, which is used throughout the codebase for efficiency and ergonomics. By using pointer-based protection we avoid the overhead of incrementing/decrementing reference counts in hot loops by predeclaring several temporary protected variables which act as GC roots to protect intermediate values. 
+
+## Build and Run
 ### Stable Rust
 With the stable version of rust, you can build, run and test the project in the usual way with cargo:
 
 ```bash
 cargo build --release
 cargo run -- [options]
-cargo test
 ```
 
-The CUDD library is patched after it is downloaded and then built as part of the Rust build process. 
-
 ### Nix
-We also support building with Nix for easier packaging and deployment in the future.
+We also support building with Nix for easier packaging in the future.
 
 ```bash
 nix build
 ./result/bin/prismulti [options]
 ```
 
-For Nix builds, we download the CUDD library from nixpkgs and then apply our patch to it.
-
 For development, you can use `nix develop` to get a shell with all the relevant tools installed.
 
-## Benchmarking 
- Benchmark controls (criterion):
- - `PRISM_BENCH_TARGET_SECS`: override Criterion measurement time in seconds.
- - `PRISM_BENCH_WARMUP_SECS`: override Criterion warmup time in seconds.
-
-## Performance tuning (Sylvan)
- 
- The symbolic backend can be tuned via environment variables:
- 
- - `PRISM_SYLVAN_WORKERS` (default `0`): Lace worker threads. 
- - `PRISM_SYLVAN_GRANULARITY`: override Sylvan task granularity (optional).
- - `PRISM_SYLVAN_MEMORY_CAP`: memory cap passed to `sylvan_set_limits` (bytes).
- - `PRISM_SYLVAN_TABLE_RATIO`: table/cache ratio passed to `sylvan_set_limits`.
- - `PRISM_SYLVAN_INITIAL_RATIO`: initial table ratio passed to `sylvan_set_limits`.
- - `PRISM_TRACK_REFS`: enable/disable Rust-side ref-tracking bookkeeping (`true`/`false`).
-  
-## Using the binary
-
+### Using the Binary
 General form:
 
 ```bash
@@ -80,9 +61,7 @@ Options:
 - `--props 1,2,3` evaluate only selected property indices (1-based, in file order)
 - `-v, --verbose` enable debug-level logging
 
-
-### Example
-
+#### Example
 ```bash
 cargo run -- --model-type dtmc --model tests/dtmc/knuth_die.prism --prop-file tests/dtmc/knuth_die.prop --props 2,3 --const x=4
 ```
@@ -90,5 +69,29 @@ cargo run -- --model-type dtmc --model tests/dtmc/knuth_die.prism --prop-file te
 This parses the model and properties, constructs the symbolic DTMC, and checks
 properties 2 and 3 from the property file.
 
+## Testing
+We mostly use rust integration tests on small results. Simply run `cargo test` to run all tests. 
+
+## Benchmarks
+We provide both macro-benchmarking and micro-benchmarking infrastructure within `benches/`.
+
+Micro-benchmarking is provided by the `criterion` crate and allows for fine-grained benchmarking of individual functions or operations. See `dtmc_benches.rs`. (However, this is not currently used for much)
+
+Macro-benchmarking is done via `hyperfine` in a Python script that runs the entire binary on a set of models and properties and measures end-to-end runtime. See `hyperfine_benches.py`. This is currently the main benchmarking tool we use to measure performance improvements.
+
+## Sylvan Tuning
+ 
+ The symbolic backend can be tuned via environment variables:
+ 
+ - `PRISM_SYLVAN_WORKERS` (default `0`): Lace worker threads. 
+ - `PRISM_SYLVAN_GRANULARITY`: override Sylvan task granularity (optional).
+ - `PRISM_SYLVAN_MEMORY_CAP`: memory cap passed to `sylvan_set_limits` (bytes).
+ - `PRISM_SYLVAN_TABLE_RATIO`: table/cache ratio passed to `sylvan_set_limits`.
+ - `PRISM_SYLVAN_INITIAL_RATIO`: initial table ratio passed to `sylvan_set_limits`.
+
+## Docs and Code Conventions
 For deeper DTMC semantics and symbolic checking notes, see
-`docs/dtmc_details.md`.
+([docs/dtmc_details.md](docs/dtmc_details.md)).
+
+For internal conventions around DD usage and protection, see
+([docs/dd_usage.md](docs/dd_usage.md)).

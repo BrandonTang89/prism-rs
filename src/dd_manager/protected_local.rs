@@ -185,6 +185,13 @@ macro_rules! protected_bdd {
         let mut $name = $crate::dd_manager::protected_local::ProtectedBddLocal::new($expr);
         $name.protect();
     };
+    ($name:ident) => {
+        #[allow(unused_mut)]
+        let mut $name = $crate::dd_manager::protected_local::ProtectedBddLocal::new(
+            $crate::dd_manager::dd::bdd_false(),
+        );
+        $name.protect();
+    };
 }
 
 #[macro_export]
@@ -192,6 +199,13 @@ macro_rules! protected_add {
     ($name:ident, $expr:expr) => {
         #[allow(unused_mut)]
         let mut $name = $crate::dd_manager::protected_local::ProtectedAddLocal::new($expr);
+        $name.protect();
+    };
+    ($name:ident) => {
+        #[allow(unused_mut)]
+        let mut $name = $crate::dd_manager::protected_local::ProtectedAddLocal::new(
+            $crate::dd_manager::dd::add_zero(),
+        );
         $name.protect();
     };
 }
@@ -203,6 +217,13 @@ macro_rules! protected_map {
         let mut $name = $crate::dd_manager::protected_local::ProtectedMapLocal::new($expr);
         $name.protect();
     };
+    ($name:ident) => {
+        #[allow(unused_mut)]
+        let mut $name = $crate::dd_manager::protected_local::ProtectedMapLocal::new(
+            $crate::dd_manager::dd::bdd_map_empty(),
+        );
+        $name.protect();
+    };
 }
 
 #[macro_export]
@@ -210,6 +231,13 @@ macro_rules! protected_var_set {
     ($name:ident, $expr:expr) => {
         #[allow(unused_mut)]
         let mut $name = $crate::dd_manager::protected_local::ProtectedVarSetLocal::new($expr);
+        $name.protect();
+    };
+    ($name:ident) => {
+        #[allow(unused_mut)]
+        let mut $name = $crate::dd_manager::protected_local::ProtectedVarSetLocal::new(
+            $crate::dd_manager::dd::var_set_empty(),
+        );
         $name.protect();
     };
 }
