@@ -1,6 +1,6 @@
 [package]
 name = "prismulti"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "A multi-threaded Rust implementation of a subset of the PRISM model checker."
 license = "MIT"
