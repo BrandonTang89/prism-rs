@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{self, Write};
 
+use sylvan_sys::bdd::Sylvan_restrict;
 use sylvan_sys::{BDD, MTBDD, SYLVAN_FALSE, SYLVAN_INVALID, SYLVAN_TRUE};
 use sylvan_sys::{
     bdd::{
@@ -516,6 +517,26 @@ pub fn add_nequals(a: AddNode, b: AddNode) -> BddNode {
     bdd_or(gt.get(), lt.get())
 }
 
+/// Minimises the size of f, ensuring to preseve values within the care set c
+pub fn bdd_restrict(f: BddNode, c: BddNode) -> BddNode {
+    BddNode(must_node(
+        unsafe { Sylvan_restrict(f.0, c.0) },
+        "Sylvan_restrict",
+    ))
+}
+
+/// Minimises the size of f, ensuring to preseve values within the care set c
+pub fn add_restrict(f: AddNode, c: BddNode) -> AddNode {
+    AddNode(must_node(
+        unsafe { Sylvan_restrict(f.0, c.0) },
+        "Sylvan_restrict",
+    ))
+}
+
+pub fn add_mask(f: AddNode, mask: BddNode) -> AddNode {
+    add_ite(mask, f, add_const(0.0))
+}
+
 /// Sup-norm equality check with tolerance.
 pub fn add_equal_sup_norm(a: AddNode, b: AddNode, tolerance: f64) -> bool {
     unsafe { Sylvan_mtbdd_equal_norm_d(a.0, b.0, tolerance) == SYLVAN_TRUE }
@@ -554,10 +575,22 @@ pub fn foreach_node<F: FnMut(MTBDD)>(root: MTBDD, mut f: F) {
     }
 }
 
-/// Returns unique terminal nodes reachable from `root`.
-pub fn terminal_nodes(root: MTBDD) -> Vec<MTBDD> {
+pub fn terminal_values(root: AddNode) -> Vec<f64> {
     let mut out = Vec::new();
-    foreach_node(root, |n| {
+    foreach_node(root.0, |n| {
+        if is_constant(n) {
+            out.push(leaf_to_f64(n));
+        }
+    });
+    out.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    out.dedup();
+    out
+}
+
+/// Returns unique terminal nodes reachable from `root`.
+pub fn terminal_nodes(root: AddNode) -> Vec<MTBDD> {
+    let mut out = Vec::new();
+    foreach_node(root.0, |n| {
         if is_constant(n) {
             out.push(regular_node(n));
         }
@@ -568,7 +601,7 @@ pub fn terminal_nodes(root: MTBDD) -> Vec<MTBDD> {
 }
 
 /// Returns the number of unique terminal nodes under `root`.
-pub fn num_terminals(root: MTBDD) -> usize {
+pub fn num_terminals(root: AddNode) -> usize {
     terminal_nodes(root).len()
 }
 
@@ -579,11 +612,10 @@ pub fn num_nodes(node: MTBDD) -> usize {
 
 /// Computes standard statistics for an ADD root.
 pub fn add_stats(root: AddNode, num_vars: u32) -> AddStats {
-    let root = regular_node(root.0);
-    let minterms =
-        unsafe { sylvan_sys::mtbdd::Sylvan_mtbdd_satcount(root, num_vars as usize) }.round() as u64;
+    let minterms = unsafe { sylvan_sys::mtbdd::Sylvan_mtbdd_satcount(root.0, num_vars as usize) }
+        .round() as u64;
     AddStats {
-        node_count: dag_size(root),
+        node_count: dag_size(root.0),
         terminal_count: num_terminals(root),
         minterms,
     }

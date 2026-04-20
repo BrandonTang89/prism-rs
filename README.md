@@ -3,7 +3,7 @@
 `prismulti` is a multi-threaded rust implementation of a subset of the
 [PRISM](https://www.prismmodelchecker.org/) model checker.
 
-## Current status
+## Current Status
 
 Working today:
 - PRISM DTMC model parsing and symbolic construction
@@ -27,24 +27,30 @@ This type strictness is taken further by the usage of `VarSet` and `BddMap` type
 
 CUDD uses value-based reference counting, while Sylvan allows the use of pointer based protection, which is used throughout the codebase for efficiency and ergonomics. By using pointer-based protection we avoid the overhead of incrementing/decrementing reference counts in hot loops by predeclaring several temporary protected variables which act as GC roots to protect intermediate values. 
 
+We make use of the `restrict` operator from Coudert and Madre's algorithm (ICCAD90) to efficiently reduce the size of ADDs before hot loops. This is a powerful optimization that can be used in many places in the codebase, but is not yet implemented in PRISM.
+
 ## Build and Run
 ### Stable Rust
 With the stable version of rust, you can build, run and test the project in the usual way with cargo:
 
 ```bash
-cargo build --release
-cargo run -- [options]
+cargo build --release  # build
+cargo run -- [options] # build and run
 ```
 
 ### Nix
 We also support building with Nix for easier packaging in the future.
-
 ```bash
 nix build
 ./result/bin/prismulti [options]
 ```
 
-For development, we recommend using `nix develop` to get a shell with all the relevant tools installed.
+For development, we recommend using `nix develop` to get a shell with all the relevant tools installed. 
+
+```bash
+nix develop             # get a dev shell with tools including rust
+cargo run -- [options]  # build and run with the rust in the dev shell
+```
 
 ### Using the Binary
 General form:
@@ -79,7 +85,7 @@ Micro-benchmarking is provided by the `criterion` crate and allows for fine-grai
 
 Macro-benchmarking is done via `hyperfine` in a Python script that runs the entire binary on a set of models and properties and measures end-to-end runtime. Benchmark definitions are centralized in `benches/benchmarks.py` so they can also be reused by other profiling scripts.
 
-### Hyperfine benchmarks
+### Hyperfine Benchmarks
 Install `hyperfine` and run:
 
 ```bash

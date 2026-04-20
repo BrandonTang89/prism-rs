@@ -41,7 +41,11 @@ after the value is in its final local slot. Use the macros:
 Each macro expands to:
 
 ```rust
-let mut name = ProtectedXLocal::new(expr);
+# use prismulti::dd_manager::{dd, protected_local::ProtectedBddLocal, DDManager};
+# let mut mgr = DDManager::new();
+# let x_idx = mgr.new_var();
+# let expr = dd::bdd_var(&mgr, x_idx);
+let mut name = ProtectedBddLocal::new(expr);
 name.protect();
 ```
 
@@ -88,21 +92,28 @@ In other words: ownership of root-liveness is at call boundaries.
 ### Caller-side protection
 
 ```rust
-crate::protected_bdd!(x, dd::bdd_var(&mgr, x_idx));
-crate::protected_bdd!(not_x, dd::bdd_not(x.get()));
+# use prismulti::dd_manager::{dd, DDManager};
+# use prismulti::protected_bdd;
+# let mut mgr = DDManager::new();
+# let x_idx = mgr.new_var();
+protected_bdd!(x, dd::bdd_var(&mgr, x_idx));
+protected_bdd!(not_x, dd::bdd_not(x.get()));
 
 let combined = dd::bdd_and(x.get(), not_x.get());
-crate::protected_bdd!(combined_root, combined);
+protected_bdd!(combined_root, combined);
+# let _ = combined_root.get();
 ```
 
 ### Callee-side temporaries only
 
 ```rust
+# use prismulti::dd_manager::{dd, AddNode, BddNode};
+# use prismulti::protected_bdd;
 pub fn add_equals(a: AddNode, b: AddNode) -> BddNode {
-    crate::protected_bdd!(gt, add_greater_than(a, b));
-    crate::protected_bdd!(lt, add_less_than(a, b));
-    crate::protected_bdd!(neq, bdd_or(gt.get(), lt.get()));
-    bdd_not(neq.get())
+    protected_bdd!(gt, dd::add_greater_than(a, b));
+    protected_bdd!(lt, dd::add_less_than(a, b));
+    protected_bdd!(neq, dd::bdd_or(gt.get(), lt.get()));
+    dd::bdd_not(neq.get())
 }
 ```
 

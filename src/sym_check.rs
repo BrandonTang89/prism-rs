@@ -25,11 +25,12 @@ pub enum PropertyEvaluation {
     Unsupported(&'static str),
 }
 
-/// Converts a boolean state formula into a current-state BDD.\
+/// Converts a boolean state formula into a current-state BDD.
 fn state_formula_to_bdd(dtmc: &mut SymbolicDTMC, expr: &Expr) -> BddNode {
     trace!("Translating state formula to BDD: {}", expr);
     protected_add!(expr_add, translate_expr(expr, dtmc));
-    dd::add_to_bdd(expr_add.get())
+    protected_bdd!(expr_bdd, dd::add_to_bdd(expr_add.get()));
+    dd::bdd_and(expr_bdd.get(), dtmc.get_reachable_bdd())
 }
 
 /// Evaluates an ADD of state values at the initial state by traversing the DD.\
@@ -66,8 +67,20 @@ fn check_bounded_until_probability_add(
     k: u32,
 ) -> AddNode {
     info!("Checking bounded until with bound k={}", k);
+
+    protected_add!(
+        not_reachable_add,
+        dd::bdd_to_add(dd::bdd_not(dtmc.get_reachable_bdd()))
+    );
+
     protected_bdd!(phi1_bdd, state_formula_to_bdd(dtmc, phi1));
     protected_bdd!(phi2_bdd, state_formula_to_bdd(dtmc, phi2));
+
+    protected_add!(
+        tmp,
+        dd::add_times(dd::bdd_to_add(phi2_bdd.get()), not_reachable_add.get())
+    );
+    println!("{:?}", dd::terminal_values(tmp.get()));
 
     protected_add!(s_yes_add, dd::bdd_to_add(phi2_bdd.get()));
 
@@ -89,6 +102,18 @@ fn check_bounded_until_probability_add(
     protected_add!(res_add, s_yes_add.get());
     protected_add!(renamed);
     protected_add!(stepped);
+
+    // Restrict to minimise t_question size
+    // Next Variable Restrict - Don't need to fix up
+    protected_bdd!(
+        reachable_next,
+        dd::bdd_swap_variables(dtmc.get_reachable_bdd(), dtmc.curr_to_next_map.get())
+    );
+    t_question.replace(dd::add_restrict(t_question.get(), reachable_next.get()));
+
+    // Curr Variable Restrict
+    t_question.replace(dd::add_restrict(t_question.get(), dtmc.get_reachable_bdd()));
+
     for i in 1..=k {
         trace!("Bounded-until iteration {}/{}", i, k);
         renamed.replace(dd::add_compose_with_map(
@@ -101,6 +126,8 @@ fn check_bounded_until_probability_add(
             renamed.get(),
             dtmc.next_var_set.get(),
         ));
+        // fix up current variable mask
+        stepped.replace(dd::add_mask(stepped.get(), dtmc.get_reachable_bdd()));
 
         res_add.set(dd::add_plus(stepped.get(), s_yes_add.get()));
     }
@@ -138,6 +165,18 @@ fn solve_jacobi(dtmc: &mut SymbolicDTMC, a: AddNode, b: AddNode, init: AddNode) 
     protected_add!(sol_next);
     protected_add!(matmul);
     protected_add!(sol_prime);
+
+    // Restrict to minimise a_prime size
+    // Next Variable Restrict - Don't need to fix up
+    protected_bdd!(
+        reachable_next,
+        dd::bdd_swap_variables(dtmc.get_reachable_bdd(), dtmc.curr_to_next_map.get())
+    );
+    a_prime.replace(dd::add_restrict(a_prime.get(), reachable_next.get()));
+
+    // Curr Variable Restrict
+    a_prime.replace(dd::add_restrict(a_prime.get(), dtmc.get_reachable_bdd()));
+
     let mut iterations = 0usize;
     loop {
         iterations += 1;
@@ -151,6 +190,10 @@ fn solve_jacobi(dtmc: &mut SymbolicDTMC, a: AddNode, b: AddNode, init: AddNode) 
             sol_next.get(),
             dtmc.next_var_set.get(),
         ));
+
+        // Fix up current variable restrict
+        matmul.replace(dd::add_mask(matmul.get(), dtmc.get_reachable_bdd()));
+
         sol_prime.replace(dd::add_plus(matmul.get(), b_prime.get()));
 
         if dd::add_equal_sup_norm(sol.get(), sol_prime.get(), dd::epsilon()) {

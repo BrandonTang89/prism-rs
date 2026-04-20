@@ -3,6 +3,7 @@
 //!# Model Checking Details
 #![doc = include_str!("../docs/dtmc_details.md")]
 #![doc = include_str!("../docs/dd_usage.md")]
+#![doc = include_str!("../docs/dd_restrict.md")]
 
 //!# References
 //! For more details:
