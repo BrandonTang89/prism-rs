@@ -235,8 +235,8 @@ PathFormulaExpr: PathFormula = {
         bound,
     },
     "G" <bound:TemporalBound?> <phi:PathStateExpr> => PathFormula::Release {
-        lhs: phi,
-        rhs: Box::new(Expr::BoolLit(false)),
+        lhs: Box::new(Expr::BoolLit(false)),
+        rhs: phi,
         bound,
     },
     <lhs:PathStateExpr> "U" <bound:TemporalBound?> <rhs:PathStateExpr> => PathFormula::Until {

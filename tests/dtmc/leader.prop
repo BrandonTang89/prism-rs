@@ -8,3 +8,8 @@ P=? [ F<=(L*(N+1)) "elected" ]
 
 // Expected time (num. rounds) to elect a leader
 R{"num_rounds"}=? [ F "elected" ]
+
+// Probability that a leader is never elected
+P=? [ G (! "elected" ) ]
+
+P=? [ G<=(L*(N+1)) (! "elected" ) ]

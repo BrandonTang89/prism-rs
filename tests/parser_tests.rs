@@ -139,7 +139,7 @@ fn parses_leader_prop_file_with_label_and_bounded_finally() {
 
     assert_eq!(constants.len(), 1);
     assert_eq!(constants[0].0, "L");
-    assert_eq!(properties.len(), 4);
+    assert_eq!(properties.len(), 5);
 
     match &properties[0] {
         DTMCProperty::ProbQuery(PathFormula::Until { lhs, rhs, bound }) => {
@@ -170,19 +170,37 @@ fn parses_leader_prop_file_with_label_and_bounded_finally() {
 
     match &properties[3] {
         DTMCProperty::ProbQuery(PathFormula::Release { lhs, rhs, bound }) => {
-            assert!(matches!(rhs.as_ref(), Expr::BoolLit(false)));
+            assert!(matches!(lhs.as_ref(), Expr::BoolLit(false)));
             assert!(bound.is_none());
-            // Globally (! "elected") -> (! "elected") R false
-            match lhs.as_ref() {
+            // Globally (! "elected") -> false R (! "elected")
+            match rhs.as_ref() {
                 Expr::UnaryOp {
                     op: prismulti::ast::UnOp::Not,
                     operand,
                 } => {
                     assert!(matches!(operand.as_ref(), Expr::LabelRef(name) if name == "elected"));
                 }
-                other => panic!("unexpected lhs in fourth property: {other:?}"),
+                other => panic!("unexpected rhs in fourth property: {other:?}"),
             }
         }
         other => panic!("unexpected fourth property: {other:?}"),
+    }
+
+    match &properties[4] {
+        DTMCProperty::ProbQuery(PathFormula::Release { lhs, rhs, bound }) => {
+            assert!(matches!(lhs.as_ref(), Expr::BoolLit(false)));
+            assert!(bound.is_some());
+            // Globally Bounded (! "elected") -> false R<=... (! "elected")
+            match rhs.as_ref() {
+                Expr::UnaryOp {
+                    op: prismulti::ast::UnOp::Not,
+                    operand,
+                } => {
+                    assert!(matches!(operand.as_ref(), Expr::LabelRef(name) if name == "elected"));
+                }
+                other => panic!("unexpected rhs in fifth property: {other:?}"),
+            }
+        }
+        other => panic!("unexpected fifth property: {other:?}"),
     }
 }

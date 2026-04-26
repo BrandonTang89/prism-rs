@@ -11,7 +11,7 @@
 use anyhow::{Result, bail};
 use tracing::{debug, info, trace};
 
-use crate::ast::{DTMCProperty, Expr, PathFormula};
+use crate::ast::{DTMCProperty, Expr, PathFormula, UnOp};
 use crate::constr_symbolic::translate_expr;
 use crate::dd_manager::dd;
 use crate::dd_manager::{AddNode, BddNode};
@@ -327,6 +327,55 @@ fn check_unbounded_until_probability_add(
     solve_jacobi(dtmc, a.get(), b.get(), b.get())
 }
 
+/// Computes the probability ADD for `P=? [phi1 R<=k phi2]`.
+fn check_bounded_release_probability_add(
+    dtmc: &mut SymbolicDTMC,
+    phi1: &Expr,
+    phi2: &Expr,
+    k: u32,
+) -> AddNode {
+    info!("Checking bounded release with bound k={}", k);
+    let not_phi1 = Expr::UnaryOp {
+        op: UnOp::Not,
+        operand: Box::new(phi1.clone()),
+    };
+    let not_phi2 = Expr::UnaryOp {
+        op: UnOp::Not,
+        operand: Box::new(phi2.clone()),
+    };
+
+    protected_add!(
+        tmp,
+        check_bounded_until_probability_add(dtmc, &not_phi1, &not_phi2, k)
+    );
+    protected_add!(one, dd::add_const(1.0));
+    dd::add_minus(one.get(), tmp.get())
+}
+
+/// Computes the probability ADD for `P=? [phi1 R phi2]`.
+fn check_unbounded_release_probability_add(
+    dtmc: &mut SymbolicDTMC,
+    phi1: &Expr,
+    phi2: &Expr,
+) -> AddNode {
+    info!("Checking unbounded release");
+    let not_phi1 = Expr::UnaryOp {
+        op: UnOp::Not,
+        operand: Box::new(phi1.clone()),
+    };
+    let not_phi2 = Expr::UnaryOp {
+        op: UnOp::Not,
+        operand: Box::new(phi2.clone()),
+    };
+
+    protected_add!(
+        tmp,
+        check_unbounded_until_probability_add(dtmc, &not_phi1, &not_phi2)
+    );
+    protected_add!(one, dd::add_const(1.0));
+    dd::add_minus(one.get(), tmp.get())
+}
+
 /// Evaluates one property at the single initial state.
 pub fn evaluate_property_at_initial_state(
     dtmc: &mut SymbolicDTMC,
@@ -372,10 +421,37 @@ pub fn evaluate_property_at_initial_state(
             );
             Ok(PropertyEvaluation::Probability(value))
         }
-        DTMCProperty::ProbQuery(PathFormula::Release { .. }) => {
-            Ok(PropertyEvaluation::Unsupported(
-                "Release properties (and G sugar) are not supported yet",
-            ))
+        DTMCProperty::ProbQuery(PathFormula::Release {
+            lhs,
+            rhs,
+            bound: Some(k_expr),
+        }) => {
+            let k = match k_expr.as_ref() {
+                Expr::IntLit(v) if *v >= 0 => *v as u32,
+                _ => bail!("Bounded-release bound must be a non-negative integer literal"),
+            };
+            info!("Checking bounded-release property: {}", property);
+            let probability_add = check_bounded_release_probability_add(dtmc, lhs, rhs, k);
+            let value = evaluate_add_in_initial_state(dtmc, probability_add);
+            debug!(
+                "Computed P=? [phi1 R<=k phi2] value at initial state: {}",
+                value
+            );
+            Ok(PropertyEvaluation::Probability(value))
+        }
+        DTMCProperty::ProbQuery(PathFormula::Release {
+            lhs,
+            rhs,
+            bound: None,
+        }) => {
+            info!("Checking unbounded-release property: {}", property);
+            let probability_add = check_unbounded_release_probability_add(dtmc, lhs, rhs);
+            let value = evaluate_add_in_initial_state(dtmc, probability_add);
+            debug!(
+                "Computed P=? [phi1 R phi2] value at initial state: {}",
+                value
+            );
+            Ok(PropertyEvaluation::Probability(value))
         }
         DTMCProperty::RewardQuery(_) => Ok(PropertyEvaluation::Unsupported(
             "Reward properties are not supported yet",

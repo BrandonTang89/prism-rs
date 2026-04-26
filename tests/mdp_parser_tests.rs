@@ -18,7 +18,7 @@ fn test_parse_simple_mdp() {
 
     let _info = analyse_mdp(&mut ast, &HashMap::new()).expect("Failed to analyze MDP model");
 
-    assert!(ast.properties.len() > 0);
+    assert!(!ast.properties.is_empty());
 }
 
 #[test]

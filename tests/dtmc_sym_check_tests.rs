@@ -199,7 +199,7 @@ fn dtmc_leader3_2_properties_with_constants() {
     .expect("Failed to construct symbolic DTMC with properties");
 
     let properties = dtmc.ast.properties.clone();
-    assert_eq!(properties.len(), 4);
+    assert_eq!(properties.len(), 5);
 
     match evaluate_property_at_initial_state(&mut dtmc, &properties[0])
         .expect("Property checking failed")
@@ -226,10 +226,17 @@ fn dtmc_leader3_2_properties_with_constants() {
         }
     }
 
-    // match evaluate_property_at_initial_state(&mut dtmc, &properties[3])
-    //     .expect("Property checking failed")
-    // {
-    //     PropertyEvaluation::Probability(value) => assert_close(value, 0.0, 1e-10),
-    //     PropertyEvaluation::Unsupported(reason) => panic!("Expected probability, got {reason}"),
-    // }
+    match evaluate_property_at_initial_state(&mut dtmc, &properties[3])
+        .expect("Property checking failed")
+    {
+        PropertyEvaluation::Probability(value) => assert_close(value, 0.0, 1e-10),
+        PropertyEvaluation::Unsupported(reason) => panic!("Expected probability, got {reason}"),
+    }
+
+    match evaluate_property_at_initial_state(&mut dtmc, &properties[4])
+        .expect("Property checking failed")
+    {
+        PropertyEvaluation::Probability(value) => assert_close(value, 0.015625, 1e-10),
+        PropertyEvaluation::Unsupported(reason) => panic!("Expected probability, got {reason}"),
+    }
 }
