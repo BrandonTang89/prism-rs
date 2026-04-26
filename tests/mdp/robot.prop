@@ -1,0 +1,3 @@
+Pmax=? [ F "goal1" ]
+
+// Pmax=? [ (G !"hazard") & (F "goal1") ]

@@ -18,13 +18,34 @@ Compared to normal prism, we do not support global variables and require that th
 
 Lastly, if there are any states with no enabled actions, we call them "dead-end" states and add a self-loop with probability 1 to them. This is to ensure that the transition relation is total, i.e. the sum of probabilities of outgoing transitions from any state is 1.
 
+### Property Syntax
+The properties we support for DTMCs are of the form `P=? [psi]` where `psi` is a path formula defined by the following grammar:
+
+```text
+psi := X phi
+     | phi_1 U phi_2
+     | phi_1 U<=k phi_2
+     | G<=k phi
+     | G phi
+     | F(<=k) phi
+     | F phi
+```
+where `phi` are expressions over state variables.
+Apart from lines of properties, we also allow declaration of constants in the property file.
+
 ### Property Semantics
 We support the following numerical properties for DTMCs:
 - `P=? [X phi]`: The probability that the next state satisfies `phi`. 
 - `P=? [phi1 U<=k phi2]`: the probability that `phi2` is satisfied within the next `k` steps, and that `phi1` is satisfied at all preceding steps.
 - `P=? [phi1 U phi2]`: the probability that `phi2` is eventually satisfied, and that `phi1` is satisfied at all preceding steps until then.
+- `P=? [phi1 R phi2]`: the probability that `phi2` is satisfied until the first step where `phi1` is satisfied (including that step). If `phi1` is never satisfied, `phi2` must be satisfied forever.
+- `P=? [phi1 R<=k phi2]`: the probability that `phi2` is satisfied until the first step where `phi1` is satisfied (including that step), for at least the first `k` steps.
 
-Apart from lines of properties, we also allow declaration of constants in the property file.
+`F` and `G` are syntactic sugar:
+- `P=? [F phi]` is the same as `P=? [true U phi]`
+- `P=? [F<=k phi]` is the same as `P=? [true U<=k phi]`
+- `P=? [G phi]` is the same as `P=? [false R phi]`
+- `P=? [G<=k phi]` is the same as `P=? [false R<=k phi]`
 
 ### Parsing and Semantic Analysis Implementation Notes
 DTMCs are parsed by [parse_dtmc](../src/parser.rs) and represented by [DTMCAst](../src/ast.rs). We then pass them through semantic analysis to do type checking, constant folding, and desugaring of commands without action labels. This modifies the AST and produces [DTMCModelInfo](../src/analyze.rs) which is later used for model checking.
@@ -149,3 +170,17 @@ solve A x = b using Jacobi until sup-norm <= EPS
 Where `P_question` is the transition ADD masked by `S_question` over current
 state variables. This avoids spending iterations on regions already known to be
 exactly 0 or 1.
+
+### Bounded Release
+For `P=? [phi1 R<=k phi2]`, we can use the equivalence 
+
+`P=? [phi1 R<=k phi2] = P=?[!(!phi1 U<=k !phi2)] = 1 - P=?[!phi1 U<=k !phi2]`
+
+to reduce it to bounded until.
+
+### Unbounded Release
+For `P=? [phi1 R phi2]`, we can use the equivalence
+
+`P=? [phi1 R phi2] = P=?[!(!phi1 U !phi2)] = 1 - P=?[!phi1 U !phi2]` 
+
+to reduce it to unbounded until.
